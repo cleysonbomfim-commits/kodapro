@@ -3,6 +3,43 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Correção 2: rotação rápida de clipes verticais (etapa 1)
+
+**O que foi feito**
+- `crates/frame/src/lib.rs` (`VideoFrame::rotated`, usado pelo cache de GOP para todo clipe com
+  marcação de rotação):
+  - `rotate_plane` agora gira em blocos de 64 × 64 (faixas de 64 linhas em paralelo), para que as
+    linhas lidas de cada bloco fiquem no cache da CPU;
+  - giro de 90°/270° em 4:2:2 não alarga mais o croma para 4:4:4: o croma é girado no próprio
+    tamanho e cada par de amostras lado a lado vira a média (`halve_width`), resultando em 4:2:0.
+- Testes novos: a rotação em blocos dá o mesmo resultado que a rotação pixel a pixel (tamanhos que
+  não são múltiplos de 64, pixels de 1, 2 e 4 elementos, as três rotações); 4:2:2 girado vira 4:2:0
+  do tamanho certo em 10 bits; teste antigo de 4:2:2 atualizado para o 4:2:0.
+- `Koda Pro.app` reinstalado com a correção.
+
+**O que funcionou** (Mac quase ocioso, carga ~3,5)
+- Testes: `filmcraft-frame` ok; `filmcraft-codecs`, `filmcraft-media` e `filmcraft-render`:
+  472 passaram, 0 falharam; `clippy -D warnings` sem avisos em frame, codecs e platform.
+- Bench de decodificação (`--hw auto`, 3 repetições): **49,7 → 91,6 fps** (3,1× o tempo real);
+  CPU por quadro **87 → 63 ms**; primeiro quadro 82 ms; pico de memória **4,2 → 3,1 GB**.
+- Reprodução no app (1/2 resolução, 7 s, duas rodadas iguais): quadros perdidos
+  **14 % → 0,5 %** (207 mostrados, 1 perdido); decodificação p95 **61 → 33,6 ms**; cache
+  **3,2 → 1,6 GB**.
+- Somando as duas correções, no mesmo arquivo: 43,5 → 91,6 fps de decodificação e 21 % → 0,5 % de
+  quadros perdidos.
+
+**O que deu problema / limitações**
+- Clipes verticais 4:2:2 passam a ter croma 4:2:0 depois de girados, também na exportação. Para
+  entregas em H.264/HEVC 4:2:0 não muda nada; uma exportação ProRes/DNxHR 4:2:2 de um clipe
+  vertical perde metade da resolução de cor num dos eixos. Se isso importar, a saída é girar na
+  GPU (sem perda) ou criar um formato 4:4:0.
+- Só medi o preview em 1/2; em resolução cheia ainda não foi medido.
+- Mudança em código do upstream (`filmcraft-frame`): candidata a ser enviada ao FilmCraft.
+
+**Próximo passo**
+- Testar outros modos de gravação da FX30 (horizontal, XAVC HS/H.265, 4:2:0, S-I) e o preview em
+  resolução cheia; depois rodar `cargo xtask ci` completo.
+
 ## 2026-10-15 — Correção 1: cópia paralela do quadro do VideoToolbox (etapa 1)
 
 **O que foi feito**

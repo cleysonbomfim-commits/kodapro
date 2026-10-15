@@ -235,9 +235,12 @@ impl VideoFrame {
     }
 
     /// The frame turned clockwise by `quarter_turns` × 90° (a container's display rotation).
-    /// Planes rotate at their own resolution; 4:2:2 chroma is widened to 4:4:4 first for a quarter
-    /// or three-quarter turn (its half-width chroma would become half-height, which has no
-    /// [`Chroma`] variant). The pixel aspect ratio follows the turn.
+    /// Planes rotate at their own resolution, tile by tile in parallel. For a quarter or
+    /// three-quarter turn, 4:2:2 chroma becomes 4:2:0: turned, its half-width chroma would be
+    /// half-height (4:4:0, which has no [`Chroma`] variant), so each pair of chroma samples that
+    /// now sit side by side is averaged. Widening to 4:4:4 instead made a vertical 4K 10-bit clip
+    /// (Sony FX30) ~50 MB a frame and dominated its decode time. The pixel aspect ratio follows
+    /// the turn.
     pub fn rotated(&self, quarter_turns: u8) -> VideoFrame {
         let q = quarter_turns % 4;
         if q == 0 {
@@ -664,6 +667,10 @@ fn crop_plane<T: Copy + Default>(src: &[T], w: usize, h: usize, n: usize, r: Reg
     out
 }
 
+/// Output tile edge for [`rotate_plane`]: a quarter turn reads the source down its columns, so
+/// working in 64 × 64 tiles keeps the rows a tile touches in the CPU cache.
+const ROTATE_TILE: usize = 64;
+
 /// A `w`×`h` plane of `n`-element pixels turned clockwise by `q` (1–3) quarter turns.
 fn rotate_plane<T: Copy + Default + Send + Sync>(src: &[T], w: usize, h: usize, n: usize, q: u8) -> Vec<T> {
     let mut out = vec![T::default(); w * h * n];
@@ -672,39 +679,64 @@ fn rotate_plane<T: Copy + Default + Send + Sync>(src: &[T], w: usize, h: usize, 
     }
     // output width: h for a quarter / three-quarter turn
     let ow = if q % 2 == 1 { h } else { w };
-    out.par_chunks_mut(ow * n).enumerate().for_each(|(oy, row)| {
-        for ox in 0..ow {
-            // the source pixel shown at (ox, oy)
-            let (x, y) = match q {
-                1 => (oy, h - 1 - ox),
-                2 => (w - 1 - ox, h - 1 - oy),
-                _ => (w - 1 - oy, ox),
-            };
-            let s = (y * w + x) * n;
-            row[ox * n..ox * n + n].copy_from_slice(&src[s..s + n]);
+    // bands of ROTATE_TILE output rows in parallel, each walked tile by tile
+    out.par_chunks_mut(ow * n * ROTATE_TILE).enumerate().for_each(|(band, rows)| {
+        let oy0 = band * ROTATE_TILE;
+        let band_rows = rows.len() / (ow * n);
+        for ox0 in (0..ow).step_by(ROTATE_TILE) {
+            let ox1 = (ox0 + ROTATE_TILE).min(ow);
+            for r in 0..band_rows {
+                let oy = oy0 + r;
+                let row = &mut rows[r * ow * n..(r + 1) * ow * n];
+                for ox in ox0..ox1 {
+                    // the source pixel shown at (ox, oy)
+                    let (x, y) = match q {
+                        1 => (oy, h - 1 - ox),
+                        2 => (w - 1 - ox, h - 1 - oy),
+                        _ => (w - 1 - oy, ox),
+                    };
+                    let s = (y * w + x) * n;
+                    row[ox * n..ox * n + n].copy_from_slice(&src[s..s + n]);
+                }
+            }
+        }
+    });
+    out
+}
+
+/// A `w`×`h` plane halved horizontally: each output sample is the rounded mean of a pair of
+/// neighbours (the last column of an odd width is kept as it is).
+fn halve_width<T: Copy + Default + Send + Sync + Into<u32> + TryFrom<u32>>(src: &[T], w: usize, h: usize) -> Vec<T> {
+    let hw = w.div_ceil(2);
+    let mut out = vec![T::default(); hw * h];
+    if w == 0 || h == 0 || src.len() < w * h {
+        return out;
+    }
+    out.par_chunks_mut(hw).zip(src.par_chunks(w)).for_each(|(o, s)| {
+        for (x, d) in o.iter_mut().enumerate() {
+            let a: u32 = s[2 * x].into();
+            let b: u32 = s.get(2 * x + 1).map_or(a, |&b| b.into());
+            *d = T::try_from((a + b).div_ceil(2)).unwrap_or_default();
         }
     });
     out
 }
 
 /// The two chroma planes of a `w`×`h` picture turned by `q` quarter turns, and their new format.
-fn rotate_chroma<T: Copy + Default + Send + Sync>(planes: &[Arc<Vec<T>>; 3], chroma: Chroma, w: usize, h: usize, q: u8) -> ([Vec<T>; 2], Chroma) {
+fn rotate_chroma<T: Copy + Default + Send + Sync + Into<u32> + TryFrom<u32>>(
+    planes: &[Arc<Vec<T>>; 3],
+    chroma: Chroma,
+    w: usize,
+    h: usize,
+    q: u8,
+) -> ([Vec<T>; 2], Chroma) {
     let (sx, sy) = chroma.shifts();
     let (cw, ch) = (w.div_ceil(1 << sx), h.div_ceil(1 << sy));
     if chroma == Chroma::C422 && q % 2 == 1 {
-        // widen to 4:4:4 (each chroma sample covers two luma columns), then turn
-        let widen = |p: &[T]| -> Vec<T> {
-            let mut o = vec![T::default(); w * h];
-            if p.len() >= cw * h {
-                for y in 0..h {
-                    for x in 0..w {
-                        o[y * w + x] = p[y * cw + x / 2];
-                    }
-                }
-            }
-            o
-        };
-        return ([rotate_plane(&widen(&planes[1]), w, h, 1, q), rotate_plane(&widen(&planes[2]), w, h, 1, q)], Chroma::C444);
+        // turned, the cw x h chroma is h x cw: full width, half height (4:4:0); halving its width
+        // makes it 4:2:0 for the h x w picture
+        let turn = |p: &[T]| halve_width(&rotate_plane(p, cw, h, 1, q), h, cw);
+        return ([turn(&planes[1]), turn(&planes[2])], Chroma::C420);
     }
     ([rotate_plane(&planes[1], cw, ch, 1, q), rotate_plane(&planes[2], cw, ch, 1, q)], chroma)
 }
@@ -787,7 +819,7 @@ mod tests {
         assert_eq!(red270, [3, 7, 2, 6, 1, 5, 0, 4]);
         assert_eq!(f.rotated(4).width, 4);
 
-        // 4:2:0 4x2: chroma 2x1 -> 1x2; 4:2:2 4x2: chroma 2x2 -> widened 4:4:4 2x4
+        // 4:2:0 4x2: chroma 2x1 -> 1x2; 4:2:2 4x2: chroma 2x2 -> turned 2x2 -> 4:2:0 1x2
         let yuv = |chroma: Chroma, c: Vec<u8>| VideoFrame {
             width: 4,
             height: 2,
@@ -801,7 +833,71 @@ mod tests {
         assert_eq!((*chroma, &planes[0][..], &planes[1][..]), (Chroma::C420, &[4, 0, 5, 1, 6, 2, 7, 3][..], &[10, 20][..]));
         let r = yuv(Chroma::C422, vec![10, 20, 30, 40]).rotated(1);
         let PixelData::Yuv8 { planes, chroma, .. } = &r.data else { panic!() };
-        assert_eq!((*chroma, &planes[1][..]), (Chroma::C444, &[30, 10, 30, 10, 40, 20, 40, 20][..]));
+        // turned [[30, 10], [40, 20]], each side-by-side pair averaged
+        assert_eq!((*chroma, &planes[1][..]), (Chroma::C420, &[20, 30][..]));
+    }
+
+    /// Tiled rotation gives the same picture as the plain per-pixel turn, at sizes that are not
+    /// multiples of the tile and with multi-element pixels.
+    #[test]
+    fn tiled_rotation_matches_the_per_pixel_turn() {
+        let naive = |src: &[u16], w: usize, h: usize, n: usize, q: u8| -> Vec<u16> {
+            let ow = if q % 2 == 1 { h } else { w };
+            let oh = if q % 2 == 1 { w } else { h };
+            let mut out = vec![0; w * h * n];
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let (x, y) = match q {
+                        1 => (oy, h - 1 - ox),
+                        2 => (w - 1 - ox, h - 1 - oy),
+                        _ => (w - 1 - oy, ox),
+                    };
+                    for k in 0..n {
+                        out[(oy * ow + ox) * n + k] = src[(y * w + x) * n + k];
+                    }
+                }
+            }
+            out
+        };
+        for (w, h, n) in [(1, 1, 1), (3, 130, 1), (200, 67, 1), (65, 129, 4), (128, 64, 2)] {
+            let src: Vec<u16> = (0..w * h * n).map(|i| (i * 7 % 1021) as u16).collect();
+            for q in 1..=3 {
+                assert_eq!(rotate_plane(&src, w, h, n, q), naive(&src, w, h, n, q), "{w}x{h}x{n} q{q}");
+            }
+        }
+        // a short plane is not read past its end
+        assert_eq!(rotate_plane(&[1u8, 2], 2, 2, 1, 1), [0, 0, 0, 0]);
+    }
+
+    /// A 4:2:2 picture turned a quarter keeps its luma exact and gets 4:2:0 chroma of the right
+    /// size, with odd dimensions and 10-bit samples.
+    #[test]
+    fn quarter_turned_422_is_420_of_the_turned_size() {
+        let (w, h) = (6usize, 5usize);
+        let cw = w.div_ceil(2);
+        let f = VideoFrame {
+            width: w as u32,
+            height: h as u32,
+            data: PixelData::Yuv16 {
+                planes: [Arc::new((0..(w * h) as u16).collect()), Arc::new(vec![512; cw * h]), Arc::new((0..(cw * h) as u16).map(|i| i * 60).collect())],
+                chroma: Chroma::C422,
+                bits: 10,
+                alpha: None,
+            },
+            color: ColorInfo::REC709,
+            par: (1, 1),
+            pts: Tick::ZERO,
+        };
+        for q in [1u8, 3] {
+            let r = f.rotated(q);
+            let PixelData::Yuv16 { planes, chroma, bits, .. } = &r.data else { panic!() };
+            assert_eq!((r.width, r.height, *chroma, *bits), (h as u32, w as u32, Chroma::C420, 10));
+            assert_eq!(planes[0].len(), w * h);
+            // 4:2:0 of a 5 x 6 picture: 3 x 3 chroma
+            assert_eq!((planes[1].len(), planes[2].len()), (h.div_ceil(2) * w.div_ceil(2), h.div_ceil(2) * w.div_ceil(2)));
+            assert!(planes[1].iter().all(|&c| c == 512), "flat chroma stays flat");
+            assert!(planes[2].iter().all(|&c| c <= 1023), "10-bit range");
+        }
     }
 
     #[test]
