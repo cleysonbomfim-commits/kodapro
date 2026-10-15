@@ -1122,7 +1122,7 @@ mod tests {
             assert!(Language::De.has(en), "untranslated German menu: {en}");
         }
         assert_eq!(Language::De.tr("Settings"), "Voreinstellungen");
-        assert_eq!(Language::De.tr("Quit FilmCraft"), "FilmCraft beenden");
+        assert_eq!(Language::De.tr("Quit Koda Pro"), "Koda Pro beenden");
     }
 
     /// French covers the whole interface (the Spanish catalog's entries and the native macOS
