@@ -3,6 +3,31 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Marca ArtCraft removida
+
+**O que foi feito**
+- Removidos o logo ArtCraft (janela Sobre e tela inicial), o botão Discord do topo da janela, os
+  itens "Discord da ArtCraft", "Site da ArtCraft" e "Koda Pro no getartcraft.com" do menu Ajuda e do
+  menu do app no macOS, e a pasta `docs/brand/` com os logos (e suas linhas no `ATTRIBUTION.md`).
+- Os links "Código-fonte no GitHub" e "Relatar um problema" agora apontam para
+  `cleysonbomfim-commits/kodapro`.
+- A janela Sobre diz, em texto simples, que o Koda Pro é baseado no FilmCraft da equipe ArtCraft
+  (a licença da marca permite isso), traduzido nos 8 idiomas que tinham a frase antiga.
+- README e NOTICE explicam que a marca foi removida por exigência da licença.
+
+**O que funcionou**
+- Capturas de tela conferidas: sem logo, sem Discord, frase nova em português.
+- `cargo fmt` ok, `clippy -D warnings` sem avisos, testes de `filmcraft-ui-egui` e `filmcraft`:
+  707 passaram, 0 falharam; `cargo xtask assets` ok (61 assets).
+
+**O que deu problema**
+- Três testes de tradução (russo, alemão, ucraniano) falharam porque os catálogos ainda tinham os
+  textos dos menus removidos; apaguei essas traduções órfãs em todos os idiomas.
+- O clippy reclamou de um laço com um item só no menu do macOS; reescrito.
+
+**Próximo passo**
+- Montar o `Koda Pro.app` (já em andamento) e depois trocar o ícone.
+
 ## 2026-10-15 — Login no GitHub e primeiro envio
 
 **O que foi feito**
