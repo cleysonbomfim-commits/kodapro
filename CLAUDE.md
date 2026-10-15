@@ -2,6 +2,9 @@
 
 FilmCraft is a clean-room, open-source, pure-Rust non-linear video editor targeting Adobe Premiere Pro parity (and beyond). Native on macOS, Windows, Linux; web via WASM. Sibling of `../photocraft` (Photoshop), `../pdfcraft` (Acrobat) and `../vectorcraft` (Illustrator; formerly DrawCraft), with the same conventions.
 
+## Koda Pro (this fork): read first
+This repository is **Koda Pro**, a fork of FilmCraft. At the start of every session, before anything else, read [`docs/koda/PLANO.md`](docs/koda/PLANO.md) (the fork's plan) and [`docs/koda/DIARIO.md`](docs/koda/DIARIO.md) (the project diary). After each completed step, add a dated entry to the diary in Portuguese (what was done, what worked, what went wrong, next step), then commit and `git push`.
+
 ## Start every session here
 `plan/` is maintainer-local (gitignored, not in the repo). Each step names the public equivalent to use if you don't have it.
 1. Read `plan/STATUS.md` (current milestone, next unchecked task, blockers). Public: [`ROADMAP.md`](ROADMAP.md), then [`docs/gaps.md`](docs/gaps.md) (ranked shortfalls) and [`docs/roadmap.md`](docs/roadmap.md) (current focus).
