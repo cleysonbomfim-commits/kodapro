@@ -3,6 +3,47 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Correção 1: cópia paralela do quadro do VideoToolbox (etapa 1)
+
+**O que foi feito**
+- Novo módulo seguro `crates/platform/src/par_copy.rs`: copia as linhas do quadro decodificado
+  pelo VideoToolbox em paralelo (rayon, faixas de 16 linhas), separando Cb/Cr e convertendo os
+  10 bits, sem `unsafe` e devolvendo erro (não pânico) se o plano for menor que o esperado.
+- `copy_out` em `crates/platform/src/videotoolbox.rs` passou a usar esse módulo; `rayon` entrou
+  como dependência do crate `platform`. É código do upstream: vale enviar ao FilmCraft depois.
+- Testes novos comparam a cópia paralela com a cópia antiga (linha a linha, com recorte e stride
+  maior que a largura) e verificam planos curtos e estouro de tamanho.
+
+**O que funcionou**
+- `cargo fmt`, `clippy -D warnings` e testes do `filmcraft-platform`: 46 passaram, 0 falharam.
+- Bench de decodificação (`--hw auto`, 3 repetições, Mac quase ocioso, carga ~3,5):
+  **43,5 → 49,7 fps**; primeiro quadro **174 → 101–133 ms**. CPU total por quadro igual (~87 ms):
+  a cópia agora usa vários núcleos, mas o trabalho total é o mesmo.
+- Reprodução no app (1/2 resolução, 7 s): quadros perdidos **21 % → 14 %** (176 mostrados,
+  29 perdidos); decodificação média **23 → 14 ms** (p95 61 ms). Atenção: a primeira medição foi
+  com carga 15–18 e esta com carga ~5, então parte da melhora é da máquina mais livre.
+
+**O que deu problema**
+- Ainda não roda liso. O profiler do macOS (`sample`) mostrou o verdadeiro gargalo: **a rotação
+  do quadro**. O clipe é vertical (gravado 3840 × 2160 com marcação de rotação de 90°), e para cada
+  quadro o FilmCraft, em `crates/frame/src/lib.rs`:
+  1. alarga o croma 4:2:2 para 4:4:4 numa única thread (`rotate_chroma`), o que deixa o quadro
+     com ~50 MB em vez de 33 MB (por isso o cache passa de 3 GB);
+  2. gira pixel a pixel lendo a imagem em coluna (`rotate_plane`), o pior padrão de acesso à
+     memória.
+- No perfil, `rotate_plane`/`rotate_chroma` e cópias de memória dominam; a cópia que
+  paralelizei aparece pouco. A correção 1 ajuda, mas não era o maior custo.
+
+**Próximo passo** (proposta, ainda sem código)
+- Correção 2, nova prioridade: rotação rápida. Opções, da mais simples à melhor:
+  a) girar em blocos (ex.: 64 × 64) para usar o cache da CPU e alargar o croma em paralelo;
+  b) girar 4:2:2 sem converter para 4:4:4 (o croma girado vira 4:4:0, ou rotacionar direto para
+     4:2:0 no preview);
+  c) não girar na CPU: aplicar a rotação na GPU, como parte da transformação do clipe no
+     compositor. É a solução certa para reprodução, mas mexe mais no núcleo.
+- Depois, repetir as medições com o Mac ocioso e só então partir para o preview reduzido
+  (correção 2 antiga, agora 3).
+
 ## 2026-10-15 — Diagnóstico: arquivo da FX30 não roda liso no preview (etapa 1)
 
 **O que foi feito** (só medição, nenhum código alterado)

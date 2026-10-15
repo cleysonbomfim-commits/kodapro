@@ -22,7 +22,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use filmcraft_codecs::hw::{NalCodec, NalStreamInfo};
 use filmcraft_codecs::{CodecError, DecodedFrame, Result, VideoDecoder};
-use filmcraft_frame::{Chroma, PixelData, VideoFrame, pool};
+
+use crate::par_copy::{self, Plane};
+use filmcraft_frame::{Chroma, PixelData, VideoFrame};
 use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFRetained, CFString, CFType};
 use objc2_core_media::{
     CMBlockBuffer, CMFormatDescription, CMSampleBuffer, CMSampleTimingInfo, CMTime, CMTimeFlags, CMVideoFormatDescriptionCreateFromH264ParameterSets,
@@ -160,14 +162,6 @@ struct PlaneView<'a> {
     height: usize,
 }
 
-impl<'a> PlaneView<'a> {
-    /// `len` bytes of row `y` from byte `x`.
-    fn row(&self, y: usize, x: usize, len: usize) -> std::result::Result<&'a [u8], String> {
-        let start = y * self.stride + x;
-        self.data.get(start..start + len).ok_or_else(|| "plane row out of range".to_string())
-    }
-}
-
 /// The returned view borrows the lock guard, so it cannot outlive the locked base address.
 fn plane<'l>(pb: &CVImageBuffer, _lock: &'l Locked<'_>, i: usize) -> std::result::Result<PlaneView<'l>, String> {
     let base = CVPixelBufferGetBaseAddressOfPlane(pb, i) as *const u8;
@@ -215,32 +209,16 @@ fn copy_out(pb: &CVImageBuffer, l: &Layout) -> std::result::Result<VideoFrame, S
     if ys.width < ox + w || ys.height < oy + h || ys.stride < ys.width * bps || cs.width < cox + cw || cs.height < coy + ch || cs.stride < cs.width * 2 * bps {
         return Err("decoded picture planes are smaller than the picture".into());
     }
+    // Rows are copied in parallel (`par_copy`): a 4K 10-bit 4:2:2 picture is ~33 MB of samples.
+    let (yv, cv) = (Plane { data: ys.data, stride: ys.stride }, Plane { data: cs.data, stride: cs.stride });
     let data = if bps == 1 {
-        let mut yp = pool::take_u8(w * h);
-        for y in 0..h {
-            yp.extend_from_slice(ys.row(oy + y, ox * bps, w * bps)?);
-        }
-        let (mut u, mut v) = (pool::take_u8(cw * ch), pool::take_u8(cw * ch));
-        for y in 0..ch {
-            for pair in cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<2>().0 {
-                u.push(pair[0]);
-                v.push(pair[1]);
-            }
-        }
+        let yp = par_copy::copy_u8(yv, ox, oy, w, h)?;
+        let (u, v) = par_copy::split_u8(cv, cox, coy, cw, ch)?;
         PixelData::Yuv8 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: l.chroma, alpha: None }
     } else {
         let shift = 16 - l.bits;
-        let mut yp = pool::take_u16(w * h);
-        for y in 0..h {
-            yp.extend(ys.row(oy + y, ox * bps, w * bps)?.as_chunks::<2>().0.iter().map(|b| u16::from_ne_bytes([b[0], b[1]]) >> shift));
-        }
-        let (mut u, mut v) = (pool::take_u16(cw * ch), pool::take_u16(cw * ch));
-        for y in 0..ch {
-            for q in cs.row(coy + y, cox * 2 * bps, cw * 2 * bps)?.as_chunks::<4>().0 {
-                u.push(u16::from_ne_bytes([q[0], q[1]]) >> shift);
-                v.push(u16::from_ne_bytes([q[2], q[3]]) >> shift);
-            }
-        }
+        let yp = par_copy::copy_u16(yv, ox, oy, w, h, shift)?;
+        let (u, v) = par_copy::split_u16(cv, cox, coy, cw, ch, shift)?;
         PixelData::Yuv16 { planes: [Arc::new(yp), Arc::new(u), Arc::new(v)], chroma: l.chroma, bits: l.bits, alpha: None }
     };
     drop(lock);

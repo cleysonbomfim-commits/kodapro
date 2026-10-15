@@ -34,6 +34,7 @@
 mod annexb;
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))]
 mod biplanar;
+// Row-parallel picture copies (VideoToolbox read-back); compiled everywhere so its tests run.
 pub mod cursor;
 #[cfg(target_os = "macos")]
 pub mod hardware_encode;
@@ -44,6 +45,8 @@ pub mod media_foundation;
 pub mod nvdec;
 #[cfg(any(target_os = "windows", all(target_os = "linux", target_pointer_width = "64")))]
 pub mod nvenc;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod par_copy;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub mod vaapi;
 #[cfg(target_os = "macos")]
