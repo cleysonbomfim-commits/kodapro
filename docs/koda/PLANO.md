@@ -33,7 +33,7 @@ remote `upstream`.
 | 3 | Criar diário e plano (`docs/koda/`) e registrar no `CLAUDE.md` | feito |
 | 4 | Remover a marca ArtCraft (logo da janela Sobre, links do Discord e do getartcraft.com) | feito |
 | 5 | Empacotar `Koda Pro.app` para abrir com dois cliques e mostrar o nome no Dock e na barra de menus | feito |
-| 6 | Ícone próprio do Koda Pro (original, com arquivo `.attribution`) | a fazer |
+| 6 | Ícone próprio do Koda Pro (original, com arquivo `.attribution`) | feito |
 | 7 | Rodar o portão completo (`cargo xtask ci`) e corrigir o que falhar | a fazer |
 | 8 | Rotina para puxar atualizações do `upstream` (merge periódico) | a fazer |
 | 9 | Definir as funcionalidades próprias do Koda Pro | a definir com o dono |

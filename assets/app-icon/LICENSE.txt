@@ -1,13 +1,11 @@
-FilmCraft app icon (filmcraft.svg and every file derived from it in this directory:
+Koda Pro app icon (filmcraft.svg and every file derived from it in this directory:
 filmcraft-small.svg, filmcraft-1024.png, filmcraft-macos-512.png, filmcraft.icns, filmcraft.ico,
 hicolor/, and apps/filmcraft-web/web/favicon.png).
 
-Original artwork made for this project by the FilmCraft owner (Brandon Thomas) in ArtCraft, then
-vectorised. No third-party material. Licensed like the rest of FilmCraft, under either of
+The white "K" on black is the Koda Pro mark, a trademark of its owner (cleysonbomfim). It is NOT
+open source and is not covered by the MIT OR Apache-2.0 license of the code. It may be used only
+unmodified and only to identify Koda Pro. Forks and modified versions distributed by anyone else
+must replace it with their own icon.
 
-  * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
-  * MIT license (https://opensource.org/licenses/MIT)
-
-at your option.
-
-Regenerate the derived files with packaging/icons.sh.
+The files here are a vector redrawing of the owner's image, rendered to the sizes each operating
+system needs. Regenerate them with packaging/icons.sh.

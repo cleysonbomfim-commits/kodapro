@@ -1,32 +1,17 @@
-# FilmCraft app icon
+# Koda Pro app icon
 
-**Creature:** an owl with ear tufts, in a frontal head-and-shoulders portrait. It is the template the
-other Crafting App icons follow.
+A white **K** on a black rounded tile: the Koda Pro mark (a trademark of the owner, see
+[LICENSE.txt](LICENSE.txt); not open source). It replaced FilmCraft's owl icon on 2026-10-15. The file
+names still say `filmcraft` so the build, packaging and the upstream scripts keep working.
 
-## Palette
+## Geometry
 
-Exactly three colours:
-
-| Colour | Hex | Used for |
-|---|---|---|
-| Ink | `#0b0b0c` | line work and the figure's contour |
-| Paper | `#efe9dc` | the figure (the owl) |
-| FilmCraft violet (app colour) | `#8b5cf6` | the full-bleed field behind the figure |
-
-## Geometry and style
-
-- A 512-unit viewBox tile, rounded square `rx=112`, with the app colour full bleed (no frame or border).
-- An engraving-style portrait in the owl-template framing: the top of the head near y 80–100, the
-  eyes at about 40 % of the height, and the shoulders running off the bottom edge.
+- A 512-unit viewBox tile, rounded square `rx=112`, black `#000000` full bleed, with the K in white
+  `#ffffff` as one polygon, centred.
+- The K was redrawn as a vector from the owner's 2000 px image (stem, arm and leg measured from the
+  image and fitted as straight edges), so it stays sharp at every size.
 - macOS renders (`filmcraft.icns`, `filmcraft-macos-512.png`) put the tile in Apple's grid (824 of
   1024 px, transparent margin). Windows, Linux and the web use the full-bleed tile.
-
-## Provenance
-
-The owner drew it in ArtCraft as a 2880 px engraving-style image. The original is kept in craftrules
-at `craftrules/assets/app-icons/filmcraft/source.png` (not in this repo). It was vectorised with
-craftrules `assets/logo-options/_tools/vectorize_tile.py`, which keys the drawing to the three-colour
-palette and traces the ink with potrace. Licence: [LICENSE.txt](LICENSE.txt) (MIT OR Apache-2.0).
 
 ## Files
 
@@ -55,6 +40,6 @@ The web app's `apps/filmcraft-web/web/favicon.png` (128 px) comes from the same 
 ## Regenerate
 
 `packaging/icons.sh` (needs `resvg`; `iconutil` on macOS for the `.icns`; the `.ico` is packed by
-`cargo xtask ico`). To change the artwork, replace `filmcraft.svg` and `filmcraft-small.svg` with new
-exports from craftrules, then run the script. Every derived file needs its `.attribution` sidecar
+`cargo xtask ico`). To change the artwork, replace `filmcraft.svg` and `filmcraft-small.svg`, then run the
+script. Every derived file needs its `.attribution` sidecar
 and a row in `ATTRIBUTION.md`.

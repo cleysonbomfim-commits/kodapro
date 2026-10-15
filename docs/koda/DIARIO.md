@@ -3,6 +3,29 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Ícone novo (K)
+
+**O que foi feito**
+- O ícone passou a ser o K branco sobre preto enviado pelo dono, no lugar da coruja do FilmCraft.
+- O K foi redesenhado como vetor (medido na imagem original de 2000 px) e centralizado num quadrado
+  preto de cantos arredondados; `packaging/icons.sh` gerou todos os tamanhos: `.icns` do Mac, ícone
+  do Dock, `.ico` do Windows, ícones do Linux e o favicon da versão web.
+- Atribuição atualizada (16 arquivos `.attribution` e `ATTRIBUTION.md`); `assets/app-icon/LICENSE.txt`
+  agora diz que o ícone é marca do dono, não é open source e só pode ser usado para o Koda Pro.
+- `Koda Pro.app` recompilado e reinstalado em `~/Applications`.
+
+**O que funcionou**
+- `cargo xtask assets` ok; testes de `filmcraft` e `xtask`: 82 passaram, 0 falharam.
+- Ferramenta instalada: `resvg` (`brew install resvg`), usada para gerar os PNGs a partir do SVG.
+
+**O que deu problema**
+- A imagem original tinha o K um pouco acima do centro; no ícone ele foi centralizado.
+- Os nomes dos arquivos continuam `filmcraft-*` para não quebrar o build e os scripts do upstream.
+- O fundo da janela do instalador DMG do upstream ainda deriva da coruja (não usamos esse DMG).
+
+**Próximo passo**
+- Rodar o portão completo (`cargo xtask ci`, etapa 7 do plano).
+
 ## 2026-10-15 — Koda Pro.app
 
 **O que foi feito**
