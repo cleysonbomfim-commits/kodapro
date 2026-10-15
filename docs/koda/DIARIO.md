@@ -3,6 +3,27 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Plano do KODA Pro definido
+
+**O que foi feito**
+- `docs/koda/PLANO.md` reescrito com o plano do dono: fork do FilmCraft, mexer o mínimo no código
+  original, nossas funcionalidades em módulos separados (`crates/koda-*`), e cinco etapas:
+  1) base no Mac com os arquivos da Sony FX30, 2) personalização (atalhos, layout, visual KODA),
+  3) aba de cor por nós estilo DaVinci, 4) aba Motion estilo After/Fusion, 5) ferramentas de IA.
+- O que já estava feito (nome, marca, ícone, `.app`) ficou como "preparação".
+
+**O que funcionou**
+- O remote `upstream` e o aviso no `CLAUDE.md` para ler plano e diário já estavam configurados.
+
+**O que deu problema**
+- A troca do nome do projeto de demonstração ("FilmCraft Demo"), que o dono decidiu não fazer,
+  chegou a ser aplicada no `demo.rs` antes de ser cancelada; foi desfeita com `git checkout`.
+- Ponto de atenção para a etapa 1: o decodificador próprio não lê H.264/HEVC 10-bit 4:2:2, o que a
+  FX30 grava; no Mac depende do VideoToolbox.
+
+**Próximo passo**
+- Etapa 1: testar arquivos reais da FX30 (cada modo de gravação) e rodar `cargo xtask ci`.
+
 ## 2026-10-15 — Ícone novo (K)
 
 **O que foi feito**
