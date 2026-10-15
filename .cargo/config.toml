@@ -1,2 +1,13 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Koda Pro: compile and test with as little disk as possible (docs/koda/DIARIO.md, 2026-10-15:
+# target/debug reached 52 GB and filled the disk). Debug info is most of a debug build's size and
+# the incremental cache a third of what is left; tests (profile `test`) inherit `dev`. To debug
+# with symbols for a while, override per command: `CARGO_PROFILE_DEV_DEBUG=2 cargo build`.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.release]
+debug = 0

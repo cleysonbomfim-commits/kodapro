@@ -3,6 +3,33 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Compilação gastando menos disco
+
+**O que foi feito**
+- `.cargo/config.toml`: perfil `dev` (e `test`, que herda dele) com `debug = 0` e
+  `incremental = false`; `release` com `debug = 0`. Para depurar com símbolos por um tempo:
+  `CARGO_PROFILE_DEV_DEBUG=2 cargo build`.
+- Apagado o `target/debug` antigo e recompilados os testes de frame, codecs, media, render,
+  platform, ui-egui e export para medir.
+
+**O que funcionou**
+- `target/debug` para esses testes: **6,5 GB** (era 52 GB com debug info, 10 GB só sem debug
+  info); compilação do zero em 2 min 6 s. `target` inteiro: 9,6 GB (2,9 GB são do release).
+  Disco interno: 47 GB livres de 460 GB.
+
+**O que deu problema**
+- Sem o cache incremental, recompilar depois de mudar um crate do workspace fica um pouco mais
+  lento. A maior parte do que sobra são os binários de teste (cada arquivo em `tests/` do
+  `ui-egui` vira um executável próprio).
+- SSD externo "SSD 2" (954 GB, 398 GB livres) é exFAT via USB: dá para usar com
+  `CARGO_TARGET_DIR`, mas exFAT não tem os links que o cargo usa, cria arquivos `._*` do macOS,
+  é mais lento para milhares de arquivos pequenos e o build quebra se o disco for desconectado.
+  Ideal seria um volume APFS dedicado.
+
+**Próximo passo**
+- Se o disco interno apertar de novo: `cargo clean` de vez em quando, ou mover o `target` para um
+  volume APFS externo com `CARGO_TARGET_DIR`.
+
 ## 2026-10-15 — 4:2:2 preservado no export, cache ajustado e testes em mais clipes (etapa 1)
 
 **O que foi feito**
