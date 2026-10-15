@@ -824,27 +824,30 @@ fn run_job(sh: &Shared, job: &Job, pool: &Arc<MediaPool>, services: &Arc<dyn Ser
     // cancelled one, its result is not cached (the caller retries it).
     let _ = filmcraft_media::pending::take();
     let mut loading = false;
-    let preview = filmcraft_media::cancel::with_cancel(&job.cancel, || {
-        filmcraft_media::cancel::with_catch_up(job.catch_up, || {
-            filmcraft_media::cancel::with_draft(job.key.draft, || {
-                filmcraft_media::cancel::with_background(is_background(job), || {
-                    if let Target::SequencePlan(seq) = job.key.target {
-                        let (plan, pv) = plan_job(job, seq, pool, services, previews);
-                        loading = filmcraft_media::pending::take();
-                        if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            // Convert texels for upload here, not on the UI thread when the frame is shown.
-                            let prepared = filmcraft_gpu::prepare(&plan);
-                            sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+    // monitors, playback and thumbnails ask for preview frames, never export ones (`with_preview`)
+    let preview = filmcraft_media::cancel::with_preview(true, || {
+        filmcraft_media::cancel::with_cancel(&job.cancel, || {
+            filmcraft_media::cancel::with_catch_up(job.catch_up, || {
+                filmcraft_media::cancel::with_draft(job.key.draft, || {
+                    filmcraft_media::cancel::with_background(is_background(job), || {
+                        if let Target::SequencePlan(seq) = job.key.target {
+                            let (plan, pv) = plan_job(job, seq, pool, services, previews);
+                            loading = filmcraft_media::pending::take();
+                            if !job.cancel.load(Ordering::Relaxed) && !loading {
+                                // Convert texels for upload here, not on the UI thread when the frame is shown.
+                                let prepared = filmcraft_gpu::prepare(&plan);
+                                sh.plans.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, GpuPlan { plan, prepared });
+                            }
+                            pv
+                        } else {
+                            let (img, pv) = render_job(job, pool, services, previews);
+                            loading = filmcraft_media::pending::take();
+                            if !job.cancel.load(Ordering::Relaxed) && !loading {
+                                sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
+                            }
+                            pv
                         }
-                        pv
-                    } else {
-                        let (img, pv) = render_job(job, pool, services, previews);
-                        loading = filmcraft_media::pending::take();
-                        if !job.cancel.load(Ordering::Relaxed) && !loading {
-                            sh.done.lock().unwrap_or_else(|e| e.into_inner()).insert(job.key, Arc::new(img));
-                        }
-                        pv
-                    }
+                    })
                 })
             })
         })

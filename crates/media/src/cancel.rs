@@ -29,6 +29,7 @@ thread_local! {
     static CATCH_UP: Cell<Option<Tick>> = const { Cell::new(None) };
     static DRAFT: Cell<bool> = const { Cell::new(false) };
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static PREVIEW: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Run `f` as background work when `on` (restoring the previous hint after): a thumbnail, not a
@@ -50,6 +51,28 @@ pub fn with_background<R>(on: bool, f: impl FnOnce() -> R) -> R {
 /// [`with_background`]`(true, …)`).
 pub fn background() -> bool {
     BACKGROUND.with(Cell::get)
+}
+
+/// Run `f` as preview work when `on` (restoring the previous hint after): a frame for a monitor,
+/// playback or a thumbnail, never an export or a final render. Sources may then take shortcuts
+/// that cost picture quality the eye does not see on a monitor (a turned 4:2:2 clip's chroma as
+/// 4:2:0); frames made that way are only handed to preview requests.
+pub fn with_preview<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    /// Restores the previous hint however `f` ends.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PREVIEW.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(PREVIEW.with(|c| c.replace(on)));
+    f()
+}
+
+/// Whether the work running on this thread is preview work (off unless inside
+/// [`with_preview`]`(true, …)`): exports, renders and anything else get exact frames.
+pub fn preview() -> bool {
+    PREVIEW.with(Cell::get)
 }
 
 /// Run `f` with the draft-decoding hint `on` (restoring the previous one after). Frames decoded

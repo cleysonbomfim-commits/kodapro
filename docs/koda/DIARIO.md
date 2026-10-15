@@ -3,6 +3,65 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — 4:2:2 preservado no export, cache ajustado e testes em mais clipes (etapa 1)
+
+**O que foi feito**
+- **Atalho 4:2:0 só no preview.** `VideoFrame::rotated` voltou a ser sem perda (4:2:2 girado vira
+  4:4:4), agora em blocos e em paralelo (`widen_422` paralelo + `rotate_plane` em blocos); o
+  atalho 4:2:0 virou `VideoFrame::rotated_preview`.
+- Nova marcação de pedido `filmcraft_media::cancel::with_preview` (como a de draft). Os workers
+  dos monitores/reprodução/miniaturas (`crates/ui-egui/src/frames.rs`) pedem quadros como preview;
+  exportação, render final, CLI e MCP não, então recebem sempre o quadro exato.
+- O cache de GOP (`crates/codecs/src/gop.rs`) marca os quadros feitos com o atalho
+  (`previews`, como já fazia com os `drafts`) e só os entrega a pedidos de preview: um export do
+  mesmo quadro decodifica de novo pelo caminho exato.
+- **Orçamento do cache.** O piso de 64 quadros valia para qualquer tamanho de quadro; agora vale
+  em bytes equivalentes a 64 quadros 8 bits 4:2:0 daquela resolução (`min_frames`): 10 bits 4:2:0
+  = 32 quadros, 10 bits 4:2:2 = 24, 16 bits 4:4:4 = 16 (RGBA inalterado).
+- Testes novos: export nunca recebe quadro de preview (4:4:4 exato, preview 4:2:0, fonte sem
+  rotação igual nos dois); rotação exata guarda todas as amostras de croma; piso do cache por
+  profundidade.
+- `Koda Pro.app` reinstalado.
+
+**O que funcionou**
+- `cargo fmt` ok, `clippy -D warnings` sem avisos; testes de frame, codecs, media, render,
+  platform, ui-egui e export: **1.301 passaram, 0 falharam**.
+- Inventário do SSD: 561 clipes da FX30, todos H.264 (XAVC S); 544 verticais 4:2:2 10 bits
+  (403 a -90°, 141 a +90°), 16 horizontais 4:2:2 10 bits, 1 vertical 4:2:0 8 bits.
+  **Nenhum XAVC HS (H.265)**.
+- Preview no app (7 s, carga < 4), quadros perdidos:
+
+  | Clipe | 1/2 | Resolução cheia | p95 decodificação (1/2 / cheia) |
+  |---|---|---|---|
+  | FXC4808 vertical -90°, 29,97p | 0 % | 0,5 % | 37 / 67 ms |
+  | FXC4528 horizontal, 59,94p | 0 % | 0 % | 9 / 9 ms |
+  | FXC1317 vertical +90°, 59,94p | 0,7 % | 0,5 % | 36 / 35 ms |
+  | HEVC 4:2:2 10 bits vertical sintético (ffmpeg/x265, 103 Mbps, 4 s) | 0,9 % | 0 % | 75 / 47 ms |
+
+  Cache em 796 MB em todos (antes 1,6–3,2 GB). VideoToolbox em todos os quadros, inclusive HEVC
+  4:2:2 (Rext).
+- Caminho exato (bench `--hw auto`, como no export): vertical 4K **74,6 fps** (2,5× tempo real;
+  era 43,5 no começo), horizontal 4K 59,94p **183 fps**, HEVC 4:2:2 sintético 94 fps; pico de
+  memória 2,1 GB (era 4,2 GB).
+- Export ProRes 422 HQ de 3 s do clipe vertical: 2160 × 3840, `yuv422p10le`, 90 quadros, 8,1 s.
+  Comparado com a rotação do próprio ffmpeg sobre o original: PSNR médio Y 55,0 dB, **U 55,3 dB,
+  V 60,2 dB**, ou seja, a cor 4:2:2 foi preservada.
+
+**O que deu problema**
+- **Disco cheio no meio dos testes:** `target/debug` chegou a 52 GB e o disco ficou com 122 MB
+  livres. Apaguei `target/debug` (é recriado pelo cargo) e passei a testar com
+  `CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0`, que reduz muito o tamanho.
+- No primeiro teste do HEVC sintético o clipe (5 s) terminou antes dos 7 s do teste; repetido com
+  4 s. Era problema do teste, não do app.
+- O p95 de decodificação do vertical -90° em resolução cheia (67 ms) passa dos 33 ms de um quadro,
+  mas a fila de pré-busca absorve: só 1 quadro perdido em 207.
+- XAVC HS real não foi testado (não há no SSD); o sintético não reproduz o GOP/bitrate exatos da
+  câmera.
+
+**Próximo passo**
+- Testar um XAVC HS real quando houver; editar de verdade uma timeline com vários clipes da FX30
+  (cortes, Lumetri com LUT de S-Log3, export) e rodar `cargo xtask ci` completo.
+
 ## 2026-10-15 — Correção 2: rotação rápida de clipes verticais (etapa 1)
 
 **O que foi feito**

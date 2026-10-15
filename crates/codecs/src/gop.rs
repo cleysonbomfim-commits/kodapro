@@ -150,6 +150,9 @@ struct State {
     frames: BTreeMap<i64, Arc<VideoFrame>>,
     /// The cached frames that were decoded in draft mode: served to draft requests only.
     drafts: std::collections::BTreeSet<i64>,
+    /// The cached frames finished for a monitor with a lossy shortcut (a quarter-turned 4:2:2
+    /// picture as 4:2:0, [`VideoFrame::rotated_preview`]): served to preview requests only.
+    previews: std::collections::BTreeSet<i64>,
     bytes: usize,
     /// When a frame was last asked of this cache.
     last_used: Instant,
@@ -181,6 +184,7 @@ impl State {
         while more() {
             let Some((pts, f)) = self.frames.pop_first() else { break };
             self.drafts.remove(&pts);
+            self.previews.remove(&pts);
             self.bytes = self.bytes.saturating_sub(f.byte_size());
             pool.bytes.fetch_sub(f.byte_size(), Ordering::Relaxed);
             EVICTED.fetch_add(1, Ordering::Relaxed);
@@ -188,14 +192,36 @@ impl State {
         }
     }
 
-    /// The cached frame at `pts`, unless it is a draft frame and the request wants the exact one.
-    fn cached(&self, pts: i64, draft_ok: bool) -> Option<&Arc<VideoFrame>> {
-        self.frames.get(&pts).filter(|_| draft_ok || !self.drafts.contains(&pts))
+    /// Whether the cached frame at `pts` may be handed to a request that accepts `a`.
+    fn usable(&self, pts: i64, a: Accept) -> bool {
+        (a.draft || !self.drafts.contains(&pts)) && (a.preview || !self.previews.contains(&pts))
+    }
+
+    /// The cached frame at `pts`, unless it is a draft or preview-only frame and the request
+    /// wants the exact one.
+    fn cached(&self, pts: i64, a: Accept) -> Option<&Arc<VideoFrame>> {
+        self.frames.get(&pts).filter(|_| self.usable(pts, a))
     }
 
     /// The nearest usable frame at or before `pts` (robust to decoder pts quirks).
-    fn at_or_before(&self, pts: i64, draft_ok: bool) -> Option<Arc<VideoFrame>> {
-        self.cached(pts, draft_ok).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| draft_ok || !self.drafts.contains(p)).map(|(_, f)| f)).cloned()
+    fn at_or_before(&self, pts: i64, a: Accept) -> Option<Arc<VideoFrame>> {
+        self.cached(pts, a).or_else(|| self.frames.range(..=pts).rev().find(|(p, _)| self.usable(**p, a)).map(|(_, f)| f)).cloned()
+    }
+}
+
+/// Which approximate frames a request takes: draft-decoded ones
+/// ([`filmcraft_media::cancel::with_draft`]) and preview-only ones
+/// ([`filmcraft_media::cancel::with_preview`]).
+#[derive(Clone, Copy, Debug)]
+struct Accept {
+    draft: bool,
+    preview: bool,
+}
+
+impl Accept {
+    /// What the request running on this thread accepts.
+    fn current() -> Self {
+        Self { draft: filmcraft_media::cancel::draft(), preview: filmcraft_media::cancel::preview() }
     }
 }
 
@@ -438,6 +464,22 @@ pub struct GopCache {
 /// a re-decode from the keyframe.
 const MIN_FRAMES: usize = 64;
 
+/// How many frames like `f` the cache always has room for: [`MIN_FRAMES`] 8-bit 4:2:0 frames'
+/// worth of bytes at its size, so deeper frames get fewer (10-bit 4:2:0: 32, 10-bit 4:2:2: 24,
+/// 16-bit 4:4:4: 16, never fewer than a quarter of [`MIN_FRAMES`]). Counting 64 frames whatever
+/// their depth let one 4K 10-bit 4:2:2 camera clip (Sony FX30) hold 1.6–3.2 GB, over the
+/// [`FRAME_BUDGET`] of all caches. RGBA frames keep [`MIN_FRAMES`].
+fn min_frames(f: &VideoFrame) -> usize {
+    if !matches!(f.data, filmcraft_frame::PixelData::Yuv8 { .. } | filmcraft_frame::PixelData::Yuv16 { .. }) {
+        return MIN_FRAMES;
+    }
+    let reference = (f.width as usize).saturating_mul(f.height as usize).saturating_mul(3) / 2;
+    match f.byte_size() {
+        0 => MIN_FRAMES,
+        size => (MIN_FRAMES.saturating_mul(reference) / size).clamp(MIN_FRAMES / 4, MIN_FRAMES),
+    }
+}
+
 /// A running decoder up to this many samples before the wanted sample's sync sample keeps going
 /// rather than restarting at the sync sample.
 const CONTINUE_THROUGH: usize = 48;
@@ -511,6 +553,7 @@ impl GopCache {
                 out_max: i64::MIN,
                 frames: BTreeMap::new(),
                 drafts: Default::default(),
+                previews: Default::default(),
                 bytes: 0,
                 last_used: Instant::now(),
                 pin: i64::MIN,
@@ -537,8 +580,20 @@ impl GopCache {
     }
 
     /// Colour signalled by the container wins over the bitstream's (YUV frames only); the
-    /// container's clean aperture and then its display rotation are applied.
-    fn finish(&self, mut f: VideoFrame) -> VideoFrame {
+    /// container's clean aperture and then its display rotation are applied. For a `preview`
+    /// request the rotation may take the lossy shortcut ([`VideoFrame::rotated_preview`]); the
+    /// flag returned says it did, so the frame is cached for preview requests only.
+    fn finish(&self, f: VideoFrame, preview: bool) -> (VideoFrame, bool) {
+        let f = self.finish_unrotated(f);
+        match self.rotation {
+            0 => (f, false),
+            q if preview && f.preview_rotation_is_lossy(q) => (f.rotated_preview(q), true),
+            q => (f.rotated(q), false),
+        }
+    }
+
+    /// [`Self::finish`] up to the rotation: colour and clean aperture.
+    fn finish_unrotated(&self, mut f: VideoFrame) -> VideoFrame {
         if let Some(c) = self.explicit_color
             && !matches!(f.data, filmcraft_frame::PixelData::Rgba8(_) | filmcraft_frame::PixelData::RgbaF32(_))
         {
@@ -547,15 +602,16 @@ impl GopCache {
         if let Some(r) = self.crop {
             f = f.cropped(r);
         }
-        if self.rotation != 0 { f.rotated(self.rotation) } else { f }
+        f
     }
 
-    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
-        self.store_finished(st, pts, self.finish(f), draft);
+    fn store(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool, preview: bool) {
+        let (f, preview_only) = self.finish(f, preview);
+        self.store_finished(st, pts, f, draft, preview_only);
     }
 
-    /// Cache a frame [`Self::finish`] has been applied to.
-    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool) {
+    /// Cache a frame [`Self::finish`] has been applied to (`preview_only`: as it said).
+    fn store_finished(&self, st: &mut State, pts: i64, f: VideoFrame, draft: bool, preview_only: bool) {
         st.last_used = Instant::now();
         if draft {
             st.drafts.insert(pts);
@@ -563,7 +619,12 @@ impl GopCache {
         } else {
             st.drafts.remove(&pts);
         }
-        let budget = self.budget.max(MIN_FRAMES * f.byte_size());
+        if preview_only {
+            st.previews.insert(pts);
+        } else {
+            st.previews.remove(&pts);
+        }
+        let budget = self.budget.max(min_frames(&f).saturating_mul(f.byte_size()));
         let before = st.bytes;
         st.bytes += f.byte_size();
         if let Some(old) = st.frames.insert(pts, Arc::new(f)) {
@@ -585,6 +646,7 @@ impl GopCache {
             }
             if let Some(v) = st.frames.remove(&victim) {
                 st.drafts.remove(&victim);
+                st.previews.remove(&victim);
                 st.bytes -= v.byte_size();
                 EVICTED.fetch_add(1, Ordering::Relaxed);
                 // its planes serve the next decoded pictures instead of going back to the allocator
@@ -601,11 +663,11 @@ impl GopCache {
     }
 
     /// Store decoder output (in presentation order) and advance `out_max`.
-    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>) {
+    fn store_output(&self, st: &mut State, out: Vec<crate::video::DecodedFrame>, preview: bool) {
         count_frames(&out);
         for d in out {
             st.out_max = st.out_max.max(d.pts);
-            self.store(st, d.pts, d.frame, d.draft);
+            self.store(st, d.pts, d.frame, d.draft, preview);
         }
     }
 
@@ -645,7 +707,7 @@ impl GopCache {
         if DecodingGuard::active(me) {
             return self.private_frame(s, i, want_pts, n);
         }
-        let draft = filmcraft_media::cancel::draft();
+        let accept = Accept::current();
         // Idle caches' decoders released below. Declared before the lock guard, so it is dropped
         // after the guard on every return path: dropping a decoder can block (a hardware session
         // waits for its frames in flight) and must not hold this cache's lock.
@@ -655,7 +717,7 @@ impl GopCache {
         st.last_used = Instant::now();
         st.pin = want_pts;
         let background = filmcraft_media::cancel::background();
-        if let Some(f) = st.cached(want_pts, draft).cloned() {
+        if let Some(f) = st.cached(want_pts, accept).cloned() {
             HITS.fetch_add(1, Ordering::Relaxed);
             // a monitor asking for a frame of a thumbnail's clip makes its decoder one in use
             st.background &= background;
@@ -689,7 +751,7 @@ impl GopCache {
         }
         // with the lock held: see `isolated`
         let st = &mut *st;
-        isolated(|| self.decode_until(st, s, i, want_pts, late_before, draft))
+        isolated(|| self.decode_until(st, s, i, want_pts, late_before, accept))
     }
 
     /// Decode (the lock held) until the frame with `want_pts` (sample `i`) is cached; return it.
@@ -700,7 +762,7 @@ impl GopCache {
         i: usize,
         want_pts: i64,
         late_before: Option<i64>,
-        draft: bool,
+        accept: Accept,
     ) -> crate::Result<Arc<VideoFrame>> {
         let n = s.count();
         let mut key = decode_start(s, i);
@@ -737,7 +799,7 @@ impl GopCache {
         let Some(decoder) = st.decoder.as_mut() else {
             return Err(CodecError::Decode("no video decoder".into()));
         };
-        decoder.set_draft(draft);
+        decoder.set_draft(accept.draft);
         while st.next < limit {
             if filmcraft_media::cancel::cancelled() {
                 // The decoder state stays consistent (`next`, `out_max`): a later request continues.
@@ -756,18 +818,18 @@ impl GopCache {
             let out = timed(|| decoder.decode(&data, s.pts(k)))?;
             st.next += 1;
             DECODED.fetch_add(1, Ordering::Relaxed);
-            self.store_output(st, out);
-            if st.cached(want_pts, draft).is_some() {
+            self.store_output(st, out, accept.preview);
+            if st.cached(want_pts, accept).is_some() {
                 break;
             }
         }
-        if st.cached(want_pts, draft).is_none() {
+        if st.cached(want_pts, accept).is_none() {
             let out = st.decoder.as_mut().map(|d| timed(|| d.flush())).unwrap_or_default();
-            self.store_output(st, out);
+            self.store_output(st, out, accept.preview);
             st.next = usize::MAX;
         }
         // nearest decoded frame at or before the wanted pts (robust to decoder pts quirks)
-        st.at_or_before(want_pts, draft).ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        st.at_or_before(want_pts, accept).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
 
     /// A nested request (see [`Self::frame`]): decode from the sync sample with a fresh decoder,
@@ -782,7 +844,7 @@ impl GopCache {
             .max_by_key(|p| p.pts)
             .map(|p| p.frame)
             .ok_or_else(|| CodecError::Decode("frame not produced".into()))?;
-        Ok(Arc::new(self.finish(f)))
+        Ok(Arc::new(self.finish(f, filmcraft_media::cancel::preview()).0))
     }
 
     /// Decode with `d` (positioned at `next`) until the picture with `want_pts` (sample `i`) comes out.
@@ -849,18 +911,24 @@ impl GopCache {
             timed(|| dec.decode(&data, want_pts))
         });
         // crop and rotate before taking the lock: that work runs on rayon (see `isolated`)
+        let preview = filmcraft_media::cancel::preview();
         let res = res.map(|out| {
             count_frames(&out);
-            out.into_iter().map(|d| (d.pts, self.finish(d.frame), d.draft)).collect::<Vec<_>>()
+            out.into_iter()
+                .map(|d| {
+                    let (f, preview_only) = self.finish(d.frame, preview);
+                    (d.pts, f, d.draft, preview_only)
+                })
+                .collect::<Vec<_>>()
         });
         let mut st = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.spare.len() < 16 {
             st.spare.push(dec);
         }
-        for (pts, frame, draft) in res? {
-            self.store_finished(&mut st, pts, frame, draft);
+        for (pts, frame, draft, preview_only) in res? {
+            self.store_finished(&mut st, pts, frame, draft, preview_only);
         }
-        st.at_or_before(want_pts, true).ok_or_else(|| CodecError::Decode("frame not produced".into()))
+        st.at_or_before(want_pts, Accept { draft: true, preview }).ok_or_else(|| CodecError::Decode("frame not produced".into()))
     }
 }
 
@@ -1618,5 +1686,101 @@ mod tests {
         assert_eq!(index_of(&c.frame(&s, 81_000).expect("frame")), 81);
         assert_eq!(s.resets.load(Ordering::Relaxed), resets);
         assert!(s.decodes.load(Ordering::Relaxed) - decodes <= 8 + 2);
+    }
+
+    /// A quarter-turned 4:2:2 source (a vertical camera clip): monitors get the fast 4:2:0 turn,
+    /// exports always the exact 4:4:4 one, and a preview frame is never handed to an export.
+    #[test]
+    fn turned_422_previews_are_never_exported() {
+        use filmcraft_frame::{Chroma, PixelData};
+        struct Yuv422;
+        struct Dec422;
+        impl VideoDecoder for Dec422 {
+            fn decode(&mut self, _sample: &[u8], pts: i64) -> crate::Result<Vec<DecodedFrame>> {
+                // 4 x 2 4:2:2: chroma 2 x 2
+                let frame = VideoFrame {
+                    width: 4,
+                    height: 2,
+                    data: PixelData::Yuv8 {
+                        planes: [Arc::new(vec![16; 8]), Arc::new(vec![10, 20, 30, 40]), Arc::new(vec![128; 4])],
+                        chroma: Chroma::C422,
+                        alpha: None,
+                    },
+                    color: filmcraft_color::ColorInfo::REC709,
+                    par: (1, 1),
+                    pts: filmcraft_time::Tick::ZERO,
+                };
+                Ok(vec![DecodedFrame { pts, frame, draft: false }])
+            }
+            fn flush(&mut self) -> Vec<DecodedFrame> {
+                Vec::new()
+            }
+            fn reset(&mut self) {}
+            fn name(&self) -> &str {
+                "test 4:2:2"
+            }
+        }
+        impl VideoSamples for Yuv422 {
+            fn count(&self) -> usize {
+                10
+            }
+            fn pts(&self, i: usize) -> i64 {
+                i as i64 * 1000
+            }
+            fn sync_before(&self, i: usize) -> usize {
+                i / 5 * 5
+            }
+            fn sample_at(&self, t: i64) -> Option<usize> {
+                let i = (t / 1000) as usize;
+                (i < 10).then_some(i)
+            }
+            fn read(&self, i: usize) -> crate::Result<Vec<u8>> {
+                Ok(vec![i as u8])
+            }
+            fn make_decoder(&self) -> crate::Result<Box<dyn VideoDecoder>> {
+                Ok(Box::new(Dec422))
+            }
+        }
+        let chroma = |f: &VideoFrame| match &f.data {
+            PixelData::Yuv8 { chroma, planes, .. } => (*chroma, planes[1].to_vec()),
+            _ => unreachable!(),
+        };
+        let s = Yuv422;
+        let c = GopCache::new(None).with_rotation(1);
+        // a monitor: 4:2:0, the turned chroma pairs averaged
+        let p = filmcraft_media::cancel::with_preview(true, || c.frame(&s, 2_000)).expect("frame");
+        assert_eq!(((p.width, p.height), chroma(&p)), ((2, 4), (Chroma::C420, vec![20, 30])));
+        // an export of the same frame: exact 4:4:4, decoded again rather than the cached preview
+        let e = c.frame(&s, 2_000).expect("frame");
+        assert_eq!(((e.width, e.height), chroma(&e)), ((2, 4), (Chroma::C444, vec![30, 10, 30, 10, 40, 20, 40, 20])));
+        // neighbours the preview decoded on its way are exact for an export too
+        assert_eq!(chroma(&c.frame(&s, 1_000).expect("frame")).0, Chroma::C444);
+        // a monitor may take the exact frame now cached
+        assert_eq!(chroma(&filmcraft_media::cancel::with_preview(true, || c.frame(&s, 2_000)).expect("frame")).0, Chroma::C444);
+        // an unturned source is the same either way
+        let plain = GopCache::new(None);
+        assert_eq!(chroma(&filmcraft_media::cancel::with_preview(true, || plain.frame(&s, 3_000)).expect("frame")).0, Chroma::C422);
+    }
+
+    /// The frame floor is a byte allowance: deeper frames of the same size get fewer frames.
+    #[test]
+    fn deeper_frames_get_fewer_guaranteed_slots() {
+        use filmcraft_frame::{Chroma, PixelData};
+        let yuv = |chroma: Chroma, deep: bool| {
+            let (w, h) = (64usize, 32usize);
+            let (sx, sy) = chroma.shifts();
+            let c = (w >> sx) * (h >> sy);
+            let data = if deep {
+                PixelData::Yuv16 { planes: [Arc::new(vec![0; w * h]), Arc::new(vec![0; c]), Arc::new(vec![0; c])], chroma, bits: 10, alpha: None }
+            } else {
+                PixelData::Yuv8 { planes: [Arc::new(vec![0; w * h]), Arc::new(vec![0; c]), Arc::new(vec![0; c])], chroma, alpha: None }
+            };
+            VideoFrame { width: w as u32, height: h as u32, data, color: filmcraft_color::ColorInfo::REC709, par: (1, 1), pts: filmcraft_time::Tick::ZERO }
+        };
+        assert_eq!(min_frames(&yuv(Chroma::C420, false)), MIN_FRAMES);
+        assert_eq!(min_frames(&yuv(Chroma::C420, true)), MIN_FRAMES / 2);
+        assert_eq!(min_frames(&yuv(Chroma::C422, true)), 24);
+        assert_eq!(min_frames(&yuv(Chroma::C444, true)), MIN_FRAMES / 4);
+        assert_eq!(min_frames(&VideoFrame::rgba8(4, 4, vec![0; 64])), MIN_FRAMES);
     }
 }
