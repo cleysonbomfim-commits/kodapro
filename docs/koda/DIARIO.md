@@ -3,6 +3,23 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Login no GitHub e primeiro envio
+
+**O que foi feito**
+- Instalado o GitHub CLI (`brew install gh`, versão 2.102.0); login feito com
+  `gh auth login --web` na conta `cleysonbomfim-commits` e `gh auth setup-git` para o `git push` usar
+  esse login.
+- Enviados para o GitHub os commits da troca de nome e do diário/plano (`8309f21a..3886049a`).
+
+**O que funcionou**
+- O `git push origin main` passou de primeira depois do login.
+
+**O que deu problema**
+- O primeiro push falhou porque o Mac não tinha nenhum login do GitHub configurado.
+
+**Próximo passo**
+- Remover a marca ArtCraft da janela Sobre e empacotar `Koda Pro.app` (etapas 4 e 5 do plano).
+
 ## 2026-10-15 — Diário, plano e troca do nome para Koda Pro
 
 **O que foi feito**
