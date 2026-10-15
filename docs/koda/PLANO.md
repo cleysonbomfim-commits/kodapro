@@ -32,7 +32,7 @@ remote `upstream`.
 | 2 | Trocar o nome exibido de FilmCraft para Koda Pro (janela, menus, diálogos, traduções) | feito |
 | 3 | Criar diário e plano (`docs/koda/`) e registrar no `CLAUDE.md` | feito |
 | 4 | Remover a marca ArtCraft (logo da janela Sobre, links do Discord e do getartcraft.com) | feito |
-| 5 | Empacotar `Koda Pro.app` para abrir com dois cliques e mostrar o nome no Dock e na barra de menus | a fazer |
+| 5 | Empacotar `Koda Pro.app` para abrir com dois cliques e mostrar o nome no Dock e na barra de menus | feito |
 | 6 | Ícone próprio do Koda Pro (original, com arquivo `.attribution`) | a fazer |
 | 7 | Rodar o portão completo (`cargo xtask ci`) e corrigir o que falhar | a fazer |
 | 8 | Rotina para puxar atualizações do `upstream` (merge periódico) | a fazer |
@@ -41,6 +41,6 @@ remote `upstream`.
 ## Como compilar e abrir
 
 ```sh
-cargo build --release -p filmcraft
-./target/release/filmcraft --control 9876
+packaging/macos/koda-app.sh --install   # compila e instala ~/Applications/Koda Pro.app
+./target/release/filmcraft --control 9876   # ou direto pelo terminal, com o canal de controle
 ```

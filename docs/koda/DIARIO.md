@@ -3,6 +3,26 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Koda Pro.app
+
+**O que foi feito**
+- Novo script `packaging/macos/koda-app.sh`: compila em release e monta `dist/Koda Pro.app`
+  (nome "Koda Pro", identificador `io.github.cleysonbomfim-commits.kodapro`, versão do `Cargo.toml`),
+  com assinatura ad hoc para este Mac. Com `--install` copia para `~/Applications`.
+- O `.fcproj` continua associado ao app, para abrir projetos com dois cliques.
+- Instalado em `~/Applications/Koda Pro.app`.
+
+**O que funcionou**
+- O app abre pelo Finder e o macOS o registra como "Koda Pro" (nome no Dock e na barra de menus).
+
+**O que deu problema**
+- Nada novo. A assinatura é só local: para distribuir para outros Macs seria preciso uma conta de
+  desenvolvedor Apple (o `package.sh` do upstream faz assinatura e notarização).
+- O ícone ainda é a coruja do FilmCraft.
+
+**Próximo passo**
+- Trocar o ícone do programa (pedido do dono).
+
 ## 2026-10-15 — Marca ArtCraft removida
 
 **O que foi feito**
