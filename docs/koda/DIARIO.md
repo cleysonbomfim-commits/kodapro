@@ -3,6 +3,57 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Diagnóstico: arquivo da FX30 não roda liso no preview (etapa 1)
+
+**O que foi feito** (só medição, nenhum código alterado)
+- Arquivo: `FXC4808.MP4` (Sony FX30, 8,5 s, 201 MB). `filmcraft-cli probe`:
+  - vídeo **H.264 High 4:2:2**, **10 bits**, **YUV 4:2:2**, **2160 × 3840** (vertical), 29,97 fps,
+    **~140 Mbps**; cor marcada como BT.709, faixa completa (full range);
+  - áudio PCM 16 bits, 48 kHz, estéreo; contêiner MP4 (XAVC S).
+- `cargo xtask bench --sections decode --hw auto`, com o arquivo apontado como fixture
+  `dec_h264_2160.mp4` via `FILMCRAFT_FIXTURES` (o bench só lê fixtures, não um arquivo qualquer):
+  - **43,5 fps** de decodificação (1,5× o tempo real), **86 ms de CPU por quadro**, primeiro quadro
+    em 174 ms, pico de memória **4,2 GB**;
+  - **VideoToolbox usado em 255 de 255 quadros**, 1 sessão, 0 fallbacks.
+- Mesmo bench com `--hw off`: o decodificador próprio recusa o arquivo
+  ("chroma_format_idc 2 (only 4:2:0 is implemented)").
+- Reprodução real no app (canal de controle, preview em 1/2, 7 s tocando, `perf.stats`):
+  - **21 % dos quadros perdidos** (162 mostrados, 43 descartados); áudio sem falhas;
+  - decodificação por quadro: média 23 ms, **p95 66 ms** (o limite a 29,97 fps é 33 ms);
+  - cache de quadros com **3,2 GB** para um orçamento de 1,07 GB; `hardware.backend` VideoToolbox,
+    0 quadros em software.
+
+**O que funcionou**
+- O VideoToolbox decodifica o 10 bits 4:2:2 da FX30 sem erro; o problema não é falta de suporte.
+
+**O que deu problema / o que está travando**
+1. **Cópia do quadro na CPU.** Depois do VideoToolbox, `copy_out` em
+   `crates/platform/src/videotoolbox.rs` copia o quadro 4K 10 bits inteiro, numa única thread,
+   desintercalando o croma e convertendo cada amostra para planar de 16 bits (~33 MB por quadro).
+   É a maior parte dos 86 ms de CPU por quadro.
+2. **O preview em 1/2 não economiza nada na decodificação.** O quadro 4K é decodificado e copiado
+   inteiro e só depois reduzido; o modo rascunho (draft) só vale para o decodificador próprio.
+3. **Memória.** Quadros de 33 MB num GOP longo estouram o cache (3,2 GB para 1 GB de orçamento),
+   o que força descartes e redecodificações.
+- Ressalva: a máquina estava com carga 15–18 (compilações minhas rodando), o que piora os números;
+  repetir a medição com o Mac ocioso antes e depois da correção.
+
+**Correção proposta** (ainda não implementada; mexe no crate `platform`, código do upstream, então
+o ideal é enviar de volta ao FilmCraft):
+1. Paralelizar `copy_out` por faixas de linhas (rayon) — mudança pequena e de baixo risco.
+2. Para preview reduzido, pedir ao VideoToolbox o quadro já reduzido (atributos de largura/altura da
+   sessão de decodificação, escalonador em hardware) ou reduzir durante a cópia: em 1/2 copia 1/4
+   dos dados.
+3. Médio prazo: zero-copy (passar o `CVPixelBuffer`/IOSurface direto para a GPU), já listado no
+   roadmap do upstream (#30).
+4. Ajustar o orçamento do cache ao tamanho real dos quadros 10 bits 4:2:2.
+- Contorno imediato, sem código: criar proxies (o FilmCraft já gera proxies ProRes/DNxHR) ou
+  usar o preview em 1/4.
+
+**Próximo passo**
+- Implementar a correção 1 (cópia paralela), medir de novo com o Mac ocioso e, se não bastar,
+  a correção 2.
+
 ## 2026-10-15 — Plano do KODA Pro definido
 
 **O que foi feito**
