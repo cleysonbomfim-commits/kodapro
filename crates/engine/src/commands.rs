@@ -48,7 +48,48 @@ macro_rules! query {
 
 pub fn command_specs() -> &'static [CommandSpec] {
     static SPECS: OnceLock<Vec<CommandSpec>> = OnceLock::new();
-    SPECS.get_or_init(build)
+    SPECS.get_or_init(|| {
+        let mut v = build();
+        let mut ext = EXTERNAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ext.built = true;
+        // commands of other crates (KODA Pro's `koda.color.*`), after FilmCraft's own; an id
+        // FilmCraft already has keeps FilmCraft's command
+        for f in &ext.providers {
+            for c in f() {
+                if !v.iter().any(|o| o.id == c.id) {
+                    v.push(c);
+                }
+            }
+        }
+        v
+    })
+}
+
+/// Effects registered by other crates (KODA Pro's colour grade, `filmcraft_render::external`) are
+/// hidden and changed only through their own commands: removing, toggling or resetting one by
+/// its index is refused.
+fn external_effect_error() -> EngineError {
+    EngineError::Other("this is the clip's KODA Pro color grade: change it with the koda.color.* commands".into())
+}
+
+/// Command providers of other crates ([`register_external`]), and whether the registry is built.
+struct External {
+    providers: Vec<fn() -> Vec<CommandSpec>>,
+    built: bool,
+}
+
+static EXTERNAL: std::sync::Mutex<External> = std::sync::Mutex::new(External { providers: Vec::new(), built: false });
+
+/// Add the commands `provider` returns to the registry (KODA Pro's `koda.color.*`). Call it once
+/// at startup, before the first command runs: the registry is built once. Returns `false` (and
+/// adds nothing) when it was already built.
+pub fn register_external(provider: fn() -> Vec<CommandSpec>) -> bool {
+    let mut ext = EXTERNAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if ext.built {
+        return false;
+    }
+    ext.providers.push(provider);
+    true
 }
 
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
@@ -2979,6 +3020,9 @@ fn build() -> Vec<CommandSpec> {
             });
             s.edit_sequence("Remove Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+                if it.effects.get(idx).is_some_and(|e| filmcraft_render::external::find(&e.effect).is_some()) {
+                    return Err(external_effect_error());
+                }
                 if it.effects.get(idx).and_then(|e| e.def()).is_some_and(|d| d.intrinsic) {
                     return Err(EngineError::Other("intrinsic effects cannot be removed".into()));
                 }
@@ -3120,6 +3164,9 @@ fn build() -> Vec<CommandSpec> {
             let idx = u64_p(p, "index").unwrap_or(0) as usize;
             s.edit_sequence("Toggle Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+                if it.effects.get(idx).is_some_and(|e| filmcraft_render::external::find(&e.effect).is_some()) {
+                    return Err(external_effect_error());
+                }
                 if let Some(e) = it.effects.get_mut(idx) {
                     e.enabled = !e.enabled;
                 }
@@ -3134,6 +3181,9 @@ fn build() -> Vec<CommandSpec> {
             let ph = s.playhead();
             s.edit_sequence("Reset Effect", |q, _, _| {
                 let (_, it) = q.find_item_mut(c).ok_or(filmcraft_edit::EditError::NoItem(c))?;
+                if it.effects.get(idx).is_some_and(|e| filmcraft_render::external::find(&e.effect).is_some()) {
+                    return Err(external_effect_error());
+                }
                 let mt = it.source_time_at(ph.clamp(it.start, (it.end() - Tick(1)).max(it.start)));
                 if let Some(e) = it.effects.get_mut(idx) {
                     reset_params(e, None, frame, mt);

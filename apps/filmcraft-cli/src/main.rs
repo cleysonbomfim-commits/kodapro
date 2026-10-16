@@ -245,6 +245,8 @@ fn register_gpu_frame_renderer() {
 }
 
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
+    // KODA Pro: the aba Cor's grade effect and `koda.color.*` commands (before any session)
+    koda_color::register();
     filmcraft_platform::register()
 }
 

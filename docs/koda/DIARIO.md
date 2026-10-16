@@ -3,6 +3,56 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-16 — Marco 1 da aba Cor: motor de nós
+
+**O que foi feito**
+- Crate novo **`crates/koda-color`** (camada 4, ao lado do motor):
+  - `grade`: modelo da grade (lista ordenada de nós com id estável, nome, ativado/desativado,
+    parâmetros; bypass da grade inteira). Tudo que vem de projeto/comando é sanitizado: no máximo
+    64 nós, nomes até 64 caracteres, parâmetros na faixa, nunca NaN.
+  - `store`: a grade fica no clipe como efeito oculto `koda_grade`, com o JSON da grade em texto
+    legível dentro do `.fcproj` (sem mudar o formato do projeto).
+  - `eval`: referência na CPU e passes da GPU (`grade.wgsl`), com o nó **Ganho** (mestre + RGB).
+    Os nós trabalham no sinal (sRGB/Rec.709 estendido), em float 32 bits, sem cortar valores.
+  - `commands`: `koda.color.inspect`, `addNode`, `removeNode`, `moveNode`, `renameNode`,
+    `setNodeEnabled`, `setParam`, `setBypass`, `setGrade`; cada edição é um passo de desfazer;
+    alvo = `clip` ou o clipe selecionado. Aparecem no CLI, no canal de controle e no MCP.
+- Ganchos mínimos no FilmCraft (candidatos a enviar ao upstream):
+  - `render::external`: registro de efeitos de outros crates; rodam **antes** dos outros efeitos
+    (Lumetri incluso) e antes do Motion, na CPU e no plano da GPU (`FxOp::External`).
+  - `gpu::fx`: passes WGSL externos, com pipeline em cache por shader.
+  - `engine::commands::register_external`: comandos de outros crates no registro do motor;
+    `effects.remove`, `effects.toggleEnabled` e `effects.reset` recusam a grade (só os
+    `koda.color.*` mexem nela).
+  - Os apps (desktop e CLI/MCP) chamam `koda_color::register()` na inicialização.
+- **Ajustes pedidos:** (1) a grade roda sempre primeiro, não aparece no painel de efeitos e não
+  pode ser reordenada/removida pelos comandos de efeitos — com testes; (2) a cadeia de nós já roda
+  **na GPU dentro do compositor** (preview e export), antes do marco 5; (3) testes que usarem
+  `docs/koda/cor/referencia/` são pulados com aviso se o arquivo não existir
+  (`koda_color::reference_file`).
+- Prints: `docs/koda/cor/prints/marco1-antes.png` e `marco1-depois.png` (Program monitor antes e
+  depois de um nó de ganho aplicado só por comando). **App atualizado.**
+
+**O que funcionou**
+- 15 testes do `koda-color`: modelo e sinal; comandos com desfazer/refazer; 17 parâmetros
+  hostis recusados sem pânico; grade oculta e protegida; ida e volta salvando e reabrindo o
+  projeto; a grade antes do Tint e do Motion (na CPU e como 1ª operação do plano da GPU); **GPU
+  contra CPU** no compositor (ganho, bypass, cadeia de 2 nós, nó desativado, ganho + Tint, em
+  resolução cheia e 1/2): diferença média < 0,25 e p99 ≤ 1 em 255.
+- CI completo verde com o marco 1 incluso (entrada abaixo): 3.477 testes, clippy, camadas,
+  assets e WebAssembly (o `koda-color` compila para wasm32).
+
+**O que deu problema**
+- A primeira medição GPU × CPU acusava diferença grande com ganho > 1. Era a **CPU** que não
+  aplicava a grade: um clipe cujo único efeito é a grade caía no atalho "quadro puro" do render
+  (a grade não tem definição de efeito). Corrigido com `external::has_effects` nos 6 pontos de
+  decisão do render; teste de regressão criado.
+- Clippy pediu dois ajustes pequenos (`Option::map`, `as_chunks_mut`).
+
+**Próximo passo**
+- Marco 2: nós de CST (S-Log3/S-Gamut3.Cine → Rec.709) e LUT, comparados com os frames 02 e 05
+  exportados do DaVinci (`docs/koda/cor/referencia/`).
+
 ## 2026-10-16 — CI da base: impasse na exportação encontrado e corrigido
 
 **O que foi feito**

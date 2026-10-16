@@ -81,6 +81,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("export", 3),
     ("format", 3),
     ("engine", 4),
+    // KODA Pro: the aba Cor (grades, commands, GPU passes), beside the engine whose commands it adds
+    ("koda-color", 4),
     ("platform", 5),
     ("ui-egui", 5),
     ("automation", 5),
@@ -106,6 +108,7 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("gpu", "render"),
     ("cli", "filmcraft"),
     ("tts", "tts-text"),
+    ("koda-color", "engine"),
 ];
 
 /// Crates that must not appear below L5 (UI toolkits, windowing, OS audio/menus).

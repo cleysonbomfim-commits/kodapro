@@ -414,6 +414,8 @@ fn register_gpu_frame_renderer() {
 /// a log macro does not evaluate its arguments while no logger takes its level, which left the
 /// hardware decoders out of every run.
 fn register_hardware_decoders() -> filmcraft_platform::Availability {
+    // KODA Pro: the aba Cor's grade effect and `koda.color.*` commands (before any session)
+    koda_color::register();
     let hardware = filmcraft_platform::register();
     log::info!("hardware decoding: {hardware:?}");
     hardware

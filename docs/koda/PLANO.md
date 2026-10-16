@@ -45,7 +45,7 @@ a rotina de merge periódico do `upstream`.
 |---|---|---|
 | 1 | Base funcionando no Mac com os arquivos da Sony FX30 | a fazer |
 | 2 | Personalização: atalhos, layout e visual KODA | a fazer |
-| 3 | Aba de cor por nós, estilo DaVinci Resolve | a fazer |
+| 3 | Aba de cor por nós, estilo DaVinci Resolve | em andamento (marco 1 de 7 feito) |
 | 4 | Aba Motion, estilo After Effects / Fusion | a fazer |
 | 5 | Ferramentas de IA | a fazer |
 

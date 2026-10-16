@@ -32,6 +32,11 @@ pub struct Resample {
 /// One evaluated effect.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FxOp {
+    /// A registered external effect ([`crate::external`]): its GPU passes and its CPU reference.
+    External {
+        program: crate::external::GpuProgram,
+        cpu: crate::external::CpuFx,
+    },
     BrightnessContrast {
         br: f32,
         co: f32,
@@ -264,6 +269,9 @@ impl FxOp {
     pub fn eval(e: &EffectInstance, cx: &FxCtx, w: usize, h: usize) -> Option<FxOp> {
         if !e.enabled {
             return None;
+        }
+        if let Some(x) = crate::external::find(&e.effect) {
+            return crate::external::op(x, e, crate::external::ExtCtx { t: cx.t, px_scale: cx.px_scale });
         }
         Some(match e.effect.as_str() {
             "brightness_contrast" => FxOp::BrightnessContrast { br: f(e, "brightness", cx) / 100.0 * 0.4, co: 1.0 + f(e, "contrast", cx) / 100.0 },
@@ -590,6 +598,7 @@ impl FxOp {
     pub fn gpu_ok(&self) -> bool {
         let fin = |v: &[f32]| v.iter().all(|x| x.is_finite());
         match self {
+            FxOp::External { program, .. } => program.passes.iter().all(|p| fin(&p.p)),
             FxOp::BrightnessContrast { br, co } => fin(&[*br, *co]),
             FxOp::ProcAmp { br, co, hue, sat } => fin(&[*br, *co, *hue, *sat]),
             FxOp::Tint { black, white, amount } => fin(black) && fin(white) && amount.is_finite(),
@@ -637,6 +646,7 @@ impl FxOp {
             return;
         }
         match self {
+            FxOp::External { cpu, .. } => (cpu.0)(img),
             FxOp::BrightnessContrast { br, co } => {
                 let (br, co) = (*br, *co);
                 img.map_rgb(|c, _, _| {

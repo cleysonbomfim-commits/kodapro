@@ -177,7 +177,8 @@ fn gpu_chain<'a>(project: &Project, item: &'a TrackItem, opts: RenderOptions) ->
     if !opts.effects {
         return Some(Vec::new());
     }
-    let mut chain = Vec::new();
+    // registered external effects (KODA Pro's grade) run first; `FxOp::eval` gives their passes
+    let mut chain = crate::external::first_effects(item);
     for e in item.effects.iter().filter(|e| e.def().is_some_and(|d| !d.intrinsic) && !filmcraft_project::graphic::is_layer(e)) {
         if !e.enabled {
             continue;
@@ -355,7 +356,7 @@ fn push_item(
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
         && let Some(angle) = item.multicam_angle(nested)
-        && !(opts.effects && item.has_standard_effects())
+        && !(opts.effects && crate::external::has_effects(item))
         && (nested.settings.width, nested.settings.height) == (seq.settings.width, seq.settings.height)
         && near_identity(&motion_matrix(seq, item, (nested.settings.width, nested.settings.height), Some(nested.settings.par), mt))
         && let Some(tr) = nested.angle_video_track_index(angle).and_then(|i| nested.video_tracks.get(i))
@@ -375,7 +376,7 @@ fn push_item(
     if let Some(ItemKind::Sequence(nested)) = project.item(item.item).map(|p| &p.kind)
         && nest < crate::MAX_NEST_DEPTH
         && item.multicam_angle(nested).is_none()
-        && !(opts.effects && item.has_standard_effects())
+        && !(opts.effects && crate::external::has_effects(item))
         && !item.has_opacity_masks()
         && bl == Blend::Normal
         && extra_opacity * op >= 1.0 - 1e-6
@@ -396,7 +397,7 @@ fn push_item(
     }
     // Graphic clips without standard effects: the layers are rasterised (cached) into one tight
     // image the GPU places as a layer.
-    if !(opts.effects && item.has_standard_effects() || item.has_opacity_masks())
+    if !(opts.effects && crate::external::has_effects(item) || item.has_opacity_masks())
         && project.item(item.item).is_some_and(|p| matches!(p.kind, ItemKind::Graphic { .. }))
     {
         let Some(size) = crate::source_size(project, item.item) else { return };

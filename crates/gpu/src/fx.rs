@@ -59,6 +59,10 @@ pub(crate) struct FxStage {
     px: wgpu::ComputePipeline,
     run: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
+    /// The effect stage's pipeline layout, shared by external effects' pipelines.
+    layout: wgpu::PipelineLayout,
+    /// Pipelines of external effects' shaders (`filmcraft_render::external`), by shader source.
+    external: HashMap<std::sync::Arc<str>, wgpu::ComputePipeline>,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
@@ -68,6 +72,8 @@ pub(crate) struct FxStage {
 /// One compute pass of a job.
 struct Dispatch {
     run: bool,
+    /// An external effect's pipeline (instead of `px` / `run`).
+    ext: Option<wgpu::ComputePipeline>,
     bg: wgpu::BindGroup,
     groups: (u32, u32),
 }
@@ -93,6 +99,8 @@ struct Step {
     combine: bool,
     /// A blur pass of Unsharp Mask (the original stays untouched until the combine).
     unsharp_blur: bool,
+    /// An external effect's shader (its `ext_px` entry point runs this pass).
+    ext: Option<std::sync::Arc<str>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -100,7 +108,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, ext: None }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -116,6 +124,13 @@ fn boxes(radii: &[u32], vertical: bool, repeat: bool, out: &mut Vec<Step>) {
 fn steps(op: &FxOp) -> Vec<Step> {
     let mut out = Vec::new();
     match op {
+        FxOp::External { program, .. } => {
+            for pass in &program.passes {
+                let mut s = step(0, pass.i1, &pass.p);
+                s.ext = Some(program.wgsl.clone());
+                out.push(s);
+            }
+        }
         FxOp::BrightnessContrast { br, co } => out.push(step(OP_BRIGHTNESS_CONTRAST, [0; 4], &[*br, *co])),
         FxOp::ProcAmp { br, co, hue, sat } => out.push(step(OP_PROC_AMP, [0; 4], &[*br, *co, *hue, *sat])),
         FxOp::Tint { black, white, amount } => {
@@ -331,7 +346,26 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, source, pool: HashMap::new(), used: HashSet::new() }
+        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, layout: pl, external: HashMap::new(), source, pool: HashMap::new(), used: HashSet::new() }
+    }
+
+    /// The pipeline of an external effect's shader (made once per shader source).
+    fn external_pipeline(&mut self, device: &wgpu::Device, src: &std::sync::Arc<str>) -> wgpu::ComputePipeline {
+        if let Some(p) = self.external.get(src) {
+            return p.clone();
+        }
+        let module =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("fx-external"), source: wgpu::ShaderSource::Wgsl(src.as_ref().into()) });
+        let p = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("fx-external"),
+            layout: Some(&self.layout),
+            module: &module,
+            entry_point: Some(filmcraft_render::external::ENTRY),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        self.external.insert(src.clone(), p.clone());
+        p
     }
 
     /// Start a frame: pooled textures of sizes no layer uses by [`end_frame`](Self::end_frame)
@@ -434,13 +468,14 @@ impl FxStage {
                     wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(aux) },
                 ],
             });
+            let ext = s.ext.as_ref().map(|src| self.external_pipeline(device, src));
             let groups = if s.run {
                 let lines = if s.i1[2] != 0 { w } else { h };
                 (lines.div_ceil(64), 1)
             } else {
                 (w.div_ceil(16), h.div_ceil(16))
             };
-            dispatches.push(Dispatch { run: s.run, bg, groups });
+            dispatches.push(Dispatch { run: s.run, ext, bg, groups });
             cur = dst;
             if s.combine {
                 orig = None;
@@ -480,7 +515,7 @@ impl FxStage {
         }
         let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("fx"), timestamp_writes: None });
         for d in &job.dispatches {
-            pass.set_pipeline(if d.run { &self.run } else { &self.px });
+            pass.set_pipeline(d.ext.as_ref().unwrap_or(if d.run { &self.run } else { &self.px }));
             pass.set_bind_group(0, &d.bg, &[]);
             pass.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }
