@@ -170,6 +170,8 @@ pub enum Mode {
     Import,
     #[default]
     Edit,
+    /// KODA Pro: the aba Cor (`koda::cor`).
+    Color,
     Export,
 }
 

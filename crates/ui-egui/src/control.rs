@@ -149,6 +149,7 @@ pub fn handle(app: &mut FilmcraftApp, ctx: &egui::Context, req: &ControlRequest)
                 app.ui.mode = match m.to_ascii_lowercase().as_str() {
                     "import" => Mode::Import,
                     "export" => Mode::Export,
+                    "color" => Mode::Color,
                     _ => Mode::Edit,
                 };
             }

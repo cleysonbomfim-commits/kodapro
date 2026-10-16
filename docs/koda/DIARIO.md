@@ -3,6 +3,36 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-15 — Prévia visual da aba Cor
+
+**O que foi feito**
+- A pedido do dono, uma **prévia só visual** da aba Cor (adiantando a moldura do marco 5, sem
+  funcionalidade): botão "Cor" no cabeçalho entre Editar e Exportar, e a tela no layout de
+  `docs/koda/cor/layout-aba-cor.png`: LUTs, editor de nós (01 a 06 em série, 06 tracejado =
+  desativado, 01 selecionado em verde), efeitos, faixa de clipes com codec e timecode, barra de
+  paletas, primárias em barras (Lift/Gamma/Gain/Offset com os nomes do DaVinci) e scopes (Parade
+  em destaque), viewer vertical 9:16 na altura toda à direita.
+- Código nosso em `crates/ui-egui/src/koda/cor.rs`; no FilmCraft só o necessário: `Mode::Color`,
+  a aba no cabeçalho, o despacho do corpo, o comando `mode.color` e `mode=color` no canal de
+  controle. Textos novos traduzidos em pt-BR.
+- Feito numa cópia separada (git worktree, branch `koda/previa-cor`) com `nice`, para não
+  atrapalhar o `cargo xtask ci` que estava rodando na `main`.
+- `packaging/macos/koda-app.sh` agora respeita `CARGO_TARGET_DIR`.
+- Print: `docs/koda/cor/prints/previa-aba-cor.png` (com atribuição). **App atualizado.**
+
+**O que funcionou**
+- Compilou sem avisos; `cargo xtask assets` ok (62 assets).
+
+**O que deu problema**
+- O app abriu com a janela "Recuperar alterações não salvas" listando 10 sessões: são as cópias
+  do app que fechei à força nos testes de desempenho. Foi fechada com "Agora não" (nada apagado).
+- Os nomes Lift/Gamma/Gain/Offset saíam traduzidos ("Levantar", "Gama"…) pelo catálogo existente;
+  ficaram sem tradução, como no DaVinci.
+- Nada funciona ainda: os painéis são molduras; o viewer não mostra o vídeo.
+
+**Próximo passo**
+- Terminar o CI da base, juntar esta prévia à `main` e seguir com o marco 1 (motor de nós).
+
 ## 2026-10-15 — Compilação gastando menos disco
 
 **O que foi feito**

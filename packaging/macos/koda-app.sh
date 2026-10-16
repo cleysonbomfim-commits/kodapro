@@ -30,7 +30,7 @@ APP="$ROOT/dist/$NAME.app"
 if [ "$BUILD" = 1 ]; then
   (cd "$ROOT" && cargo build --release -p filmcraft)
 fi
-BIN="$ROOT/target/release/filmcraft"
+BIN="${CARGO_TARGET_DIR:-$ROOT/target}/release/filmcraft"
 [ -x "$BIN" ] || { echo "erro: $BIN não existe; rode sem --skip-build" >&2; exit 1; }
 
 echo "==> montando $APP ($VERSION, $SHA)"

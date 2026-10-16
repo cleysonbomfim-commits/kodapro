@@ -1,0 +1,7 @@
+asset:        previa-aba-cor.png
+title:        KODA Pro aba Cor, layout preview (screenshot)
+author:       KODA Pro contributors
+source:       original work (screenshot of KODA Pro taken through the control channel)
+license:      MIT OR Apache-2.0
+added:        2026-10-15 by Claude (agent) for cleysonbomfim
+notes:        Shows only KODA Pro (FilmCraft fork) UI drawn in code: empty panels of the aba Cor preview, no media.

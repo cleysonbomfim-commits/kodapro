@@ -135,6 +135,7 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("tool.verticalType", "Vertical Type Tool", [], None),
     uic!("mode.import", "Import", [], None),
     uic!("mode.edit", "Edit", [], None),
+    uic!("mode.color", "Color", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
     uic!("help.github", "Koda Pro on GitHub", ["Help"], None),
     uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
@@ -420,6 +421,10 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
         }
         "mode.edit" => {
             app.ui.mode = Mode::Edit;
+            return Ok(Value::Null);
+        }
+        "mode.color" => {
+            app.ui.mode = Mode::Color;
             return Ok(Value::Null);
         }
         "mode.export" => {
