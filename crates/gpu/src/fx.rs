@@ -63,6 +63,10 @@ pub(crate) struct FxStage {
     layout: wgpu::PipelineLayout,
     /// Pipelines of external effects' shaders (`filmcraft_render::external`), by shader source.
     external: HashMap<std::sync::Arc<str>, wgpu::ComputePipeline>,
+    /// External effects' auxiliary images uploaded (by `Arc` address; the `Arc` is kept so the
+    /// address stays theirs), and which of them this frame used.
+    aux: HashMap<usize, (std::sync::Arc<filmcraft_render::external::AuxImage>, wgpu::TextureView)>,
+    aux_used: HashSet<usize>,
     /// Draws a layer's source into a working texture (`composite.wgsl` `fs`, no blending).
     source: wgpu::RenderPipeline,
     pool: HashMap<(u32, u32), Vec<Target>>,
@@ -101,6 +105,8 @@ struct Step {
     unsharp_blur: bool,
     /// An external effect's shader (its `ext_px` entry point runs this pass).
     ext: Option<std::sync::Arc<str>>,
+    /// An external pass's auxiliary image (bound as `aux`).
+    ext_aux: Option<std::sync::Arc<filmcraft_render::external::AuxImage>>,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -108,7 +114,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, ext: None }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, ext: None, ext_aux: None }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -128,6 +134,7 @@ fn steps(op: &FxOp) -> Vec<Step> {
             for pass in &program.passes {
                 let mut s = step(0, pass.i1, &pass.p);
                 s.ext = Some(program.wgsl.clone());
+                s.ext_aux = pass.aux.clone();
                 out.push(s);
             }
         }
@@ -346,7 +353,18 @@ impl FxStage {
             multiview_mask: None,
             cache: None,
         });
-        Self { px: compute("fx_px"), run: compute("fx_run"), bgl, layout: pl, external: HashMap::new(), source, pool: HashMap::new(), used: HashSet::new() }
+        Self {
+            px: compute("fx_px"),
+            run: compute("fx_run"),
+            bgl,
+            layout: pl,
+            external: HashMap::new(),
+            aux: HashMap::new(),
+            aux_used: HashSet::new(),
+            source,
+            pool: HashMap::new(),
+            used: HashSet::new(),
+        }
     }
 
     /// The pipeline of an external effect's shader (made once per shader source).
@@ -372,11 +390,55 @@ impl FxStage {
     /// are released then.
     pub(crate) fn begin_frame(&mut self) {
         self.used.clear();
+        self.aux_used.clear();
     }
 
     pub(crate) fn end_frame(&mut self) {
         let used = &self.used;
         self.pool.retain(|k, _| used.contains(k));
+        let aux_used = &self.aux_used;
+        self.aux.retain(|k, _| aux_used.contains(k));
+    }
+
+    /// The texture of an external pass's auxiliary image (uploaded once while frames use it).
+    /// None when it does not fit in a texture or its data is short.
+    fn aux_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        img: &std::sync::Arc<filmcraft_render::external::AuxImage>,
+    ) -> Option<wgpu::TextureView> {
+        let key = std::sync::Arc::as_ptr(img) as usize;
+        self.aux_used.insert(key);
+        if let Some((_, v)) = self.aux.get(&key) {
+            return Some(v.clone());
+        }
+        let max = device.limits().max_texture_dimension_2d;
+        let (w, h) = (img.w, img.h);
+        let texels = (w as usize).checked_mul(h as usize)?;
+        if w == 0 || h == 0 || w > max || h > max || img.rgba.len() < texels.checked_mul(4)? {
+            return None;
+        }
+        let t = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fx-external-aux"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: FX_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let bytes: Vec<u8> = img.rgba.get(..texels * 4)?.iter().flat_map(|v| v.to_le_bytes()).collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 16), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let v = t.create_view(&Default::default());
+        self.aux.insert(key, (img.clone(), v.clone()));
+        Some(v)
     }
 
     /// No working textures held.
@@ -440,8 +502,13 @@ impl FxStage {
             }
             let keep = if s.unsharp_blur || s.combine { orig } else { None };
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
-            let aux = match (s.combine, orig) {
-                (true, Some(o)) => views.get(o)?,
+            let ext_aux = match &s.ext_aux {
+                Some(img) => Some(self.aux_view(device, queue, img)?),
+                None => None,
+            };
+            let aux = match (s.combine, orig, &ext_aux) {
+                (true, Some(o), _) => views.get(o)?,
+                (_, _, Some(v)) => v,
                 _ => dummy,
             };
             let mut bytes = Vec::with_capacity(128);

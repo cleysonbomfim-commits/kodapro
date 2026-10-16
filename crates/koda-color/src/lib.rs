@@ -10,13 +10,15 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod commands;
+pub mod cst;
+pub mod deltae;
 pub mod eval;
 pub mod grade;
 pub mod store;
 
 use std::sync::Arc;
 
-pub use grade::{Grade, Node, NodeKind};
+pub use grade::{Grade, Interpolation, Node, NodeKind};
 pub use store::EFFECT;
 
 /// Register the grade effect with the renderer and the `koda.color.*` commands with the engine.
@@ -24,25 +26,72 @@ pub use store::EFFECT;
 pub fn register() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        filmcraft_render::external::register(filmcraft_render::external::ExternalFx { id: store::EFFECT, cpu: cpu_fx, gpu: gpu_fx });
+        filmcraft_render::external::register(filmcraft_render::external::ExternalFx { id: store::EFFECT, prepare });
         filmcraft_engine::commands::register_external(commands::commands);
     });
 }
 
-/// The grade's CPU reference on a clip's working image.
-fn cpu_fx(img: &mut filmcraft_render::Image, e: &filmcraft_project::EffectInstance, _cx: filmcraft_render::external::ExtCtx) {
-    if let Some(g) = store::grade_of_effect(e) {
-        eval::apply_cpu(&g, &mut img.px);
+/// The grade's operation at one frame: the CPU reference and the GPU passes, with its LUTs
+/// loaded from the project's LUT library. `None` when it changes nothing or does not parse.
+fn prepare(e: &filmcraft_project::EffectInstance, cx: &filmcraft_render::effects::FxCtx) -> Option<filmcraft_render::external::ExternalOp> {
+    let g = store::grade_of_effect(e)?;
+    if g.is_identity() {
+        return None;
     }
+    let luts = load_luts(&g, cx.project);
+    let passes: Vec<filmcraft_render::external::GpuPass> =
+        eval::gpu_passes(&g, &luts).into_iter().map(|p| filmcraft_render::external::GpuPass { i1: p.i1, p: p.p, aux: p.aux }).collect();
+    if passes.is_empty() {
+        return None;
+    }
+    let cpu = filmcraft_render::external::CpuFx(Arc::new(move |img: &mut filmcraft_render::Image| eval::apply_cpu(&g, &luts, &mut img.px)));
+    Some(filmcraft_render::external::ExternalOp { cpu, gpu: Some(filmcraft_render::external::GpuProgram { wgsl: shader(), passes }) })
 }
 
-/// The grade's GPU passes (none for a grade that changes nothing or fails to parse).
-fn gpu_fx(e: &filmcraft_project::EffectInstance, _cx: filmcraft_render::external::ExtCtx) -> Option<filmcraft_render::external::GpuProgram> {
-    let passes = store::grade_of_effect(e).map(|g| eval::gpu_passes(&g)).unwrap_or_default();
-    Some(filmcraft_render::external::GpuProgram {
-        wgsl: shader(),
-        passes: passes.into_iter().map(|p| filmcraft_render::external::GpuPass { i1: p.i1, p: p.p }).collect(),
-    })
+/// The LUTs `g` references, from the project's library (`lib:<id>`). Parsed LUTs are cached by
+/// their text, so a frame does not parse a megabyte of `.cube` again.
+fn load_luts(g: &Grade, project: Option<&filmcraft_project::Project>) -> eval::Luts {
+    let mut out = eval::Luts::new();
+    let Some(project) = project else { return out };
+    for n in g.active() {
+        let NodeKind::Lut { lut, .. } = &n.kind else { continue };
+        if out.contains_key(lut) {
+            continue;
+        }
+        let Some(id) = lut.strip_prefix("lib:") else { continue };
+        let Some(entry) = project.luts.iter().find(|l| l.id == id) else { continue };
+        if let Some(l) = cached_lut(&entry.text, &entry.format) {
+            out.insert(lut.clone(), l);
+        }
+    }
+    out
+}
+
+/// A LUT parsed from `text` (1D LUTs and shapers are baked into a 33³ cube), cached.
+fn cached_lut(text: &str, format: &str) -> Option<Arc<eval::LoadedLut>> {
+    use std::hash::{Hash, Hasher};
+    static CACHE: std::sync::Mutex<Vec<(u64, usize, Arc<eval::LoadedLut>)>> = std::sync::Mutex::new(Vec::new());
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    format.hash(&mut h);
+    let key = (h.finish(), text.len());
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, _, l)) = cache.iter().find(|(k, n, _)| (*k, *n) == key) {
+        return Some(l.clone());
+    }
+    let fmt = if format == "3dl" { Some(filmcraft_color::LutFormat::ThreeDl) } else { Some(filmcraft_color::LutFormat::Cube) };
+    let parsed = filmcraft_color::Lut::parse(text, fmt).ok()?;
+    let cube = match (&parsed.shaper, parsed.cube.clone()) {
+        (None, Some(c)) => c,
+        _ => parsed.baked_cube(33).ok()?,
+    };
+    let l = Arc::new(eval::LoadedLut::new(cube)?);
+    // a handful of LUTs at a time is plenty (a powergrade uses one or two)
+    if cache.len() >= 8 {
+        cache.remove(0);
+    }
+    cache.push((key.0, key.1, l.clone()));
+    Some(l)
 }
 
 /// The grade shader source, shared (the GPU stage caches pipelines by it).

@@ -13,27 +13,28 @@
 use std::sync::{Arc, PoisonError, RwLock};
 
 use filmcraft_project::{EffectInstance, TrackItem};
-use filmcraft_time::Tick;
 
 use crate::Image;
 
 /// The compute entry point external WGSL defines (16 × 16 workgroups).
 pub const ENTRY: &str = "ext_px";
 
-/// What an external effect is evaluated at.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ExtCtx {
-    /// Media time (keyframes).
-    pub t: Tick,
-    /// Working-image pixels per full-resolution clip pixel.
-    pub px_scale: f32,
+/// An image a GPU pass reads besides the working image (bound to `aux`, binding 3): RGBA f32,
+/// `w × h`, row-major. A 3D LUT, for instance, unfolded into 2D.
+#[derive(Debug, PartialEq)]
+pub struct AuxImage {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<f32>,
 }
 
-/// One GPU pass: integer (`u.i1`) and float (`u.p0`…`u.p5`) parameters.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One GPU pass: integer (`u.i1`) and float (`u.p0`…`u.p5`) parameters, and an optional
+/// auxiliary image (shared: the GPU stage uploads each one once).
+#[derive(Clone, Debug, PartialEq)]
 pub struct GpuPass {
     pub i1: [u32; 4],
     pub p: [f32; 24],
+    pub aux: Option<Arc<AuxImage>>,
 }
 
 /// An effect's GPU program: its shader and the passes to run (none: the effect changes nothing).
@@ -59,15 +60,21 @@ impl PartialEq for CpuFx {
     }
 }
 
+/// What a registered effect does at one frame: its CPU reference (bound to everything it needs,
+/// e.g. LUTs from the project) and, when it has one, its GPU program.
+pub struct ExternalOp {
+    pub cpu: CpuFx,
+    pub gpu: Option<GpuProgram>,
+}
+
 /// A registered effect.
 #[derive(Clone, Copy)]
 pub struct ExternalFx {
     /// The effect id stored on clips.
     pub id: &'static str,
-    /// CPU reference: changes the clip's working image (linear premultiplied RGBA f32).
-    pub cpu: fn(&mut Image, &EffectInstance, ExtCtx),
-    /// GPU program, or `None` to render the clip on the CPU.
-    pub gpu: fn(&EffectInstance, ExtCtx) -> Option<GpuProgram>,
+    /// The effect's operation at `cx` (the project is there for data it references), or `None`
+    /// when it changes nothing.
+    pub prepare: fn(&EffectInstance, &crate::effects::FxCtx) -> Option<ExternalOp>,
 }
 
 static REGISTRY: RwLock<Vec<ExternalFx>> = RwLock::new(Vec::new());
@@ -95,11 +102,16 @@ pub fn has_effects(item: &TrackItem) -> bool {
     item.has_standard_effects() || item.effects.iter().any(|e| find(&e.effect).is_some())
 }
 
-/// The GPU op of a registered effect (its passes and its CPU reference), or `None` when it has
-/// no GPU program (the clip is then rendered on the CPU).
-pub(crate) fn op(x: ExternalFx, e: &EffectInstance, cx: ExtCtx) -> Option<crate::gpufx::FxOp> {
-    let program = (x.gpu)(e, cx)?;
-    let e = e.clone();
-    let cpu = CpuFx(Arc::new(move |img: &mut Image| (x.cpu)(img, &e, cx)));
-    Some(crate::gpufx::FxOp::External { program, cpu })
+/// The GPU op of a registered effect (its passes and its CPU reference), or `None` when it
+/// changes nothing or has no GPU program (the clip is then rendered on the CPU).
+pub(crate) fn op(x: ExternalFx, e: &EffectInstance, cx: &crate::effects::FxCtx) -> Option<crate::gpufx::FxOp> {
+    let ExternalOp { cpu, gpu } = (x.prepare)(e, cx)?;
+    Some(crate::gpufx::FxOp::External { program: gpu?, cpu })
+}
+
+/// Apply a registered effect on the CPU.
+pub(crate) fn apply_cpu(x: ExternalFx, img: &mut Image, e: &EffectInstance, cx: &crate::effects::FxCtx) {
+    if let Some(op) = (x.prepare)(e, cx) {
+        (op.cpu.0)(img);
+    }
 }

@@ -57,7 +57,31 @@ pub enum NodeKind {
         #[serde(default = "ones")]
         rgb: [f32; 3],
     },
+    /// Color Space Transform (S-Gamut3.Cine / S-Log3 → Rec.709 / Gamma 2.4 by default).
+    Cst(crate::cst::Cst),
+    /// A 3D LUT from the project's LUT library (`lib:<id>`), mixed in at `intensity` (0–1).
+    Lut {
+        #[serde(default)]
+        lut: String,
+        #[serde(default = "one")]
+        intensity: f32,
+        #[serde(default)]
+        interpolation: Interpolation,
+    },
 }
+
+/// How a LUT is sampled between its grid points. DaVinci's default (and the KODA powergrade's
+/// LUT) matches trilinear best: ΔE 0.091 mean against 0.095 tetrahedral (`docs/koda/DIARIO.md`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Interpolation {
+    #[default]
+    Trilinear,
+    Tetrahedral,
+}
+
+/// Longest LUT reference kept.
+pub const MAX_LUT_REF: usize = 256;
 
 fn one() -> f32 {
     1.0
@@ -71,6 +95,8 @@ impl NodeKind {
     pub fn from_type(t: &str) -> Option<Self> {
         match t {
             "gain" => Some(NodeKind::Gain { master: 1.0, rgb: [1.0; 3] }),
+            "cst" => Some(NodeKind::Cst(crate::cst::Cst::default())),
+            "lut" => Some(NodeKind::Lut { lut: String::new(), intensity: 1.0, interpolation: Interpolation::Trilinear }),
             _ => None,
         }
     }
@@ -79,6 +105,8 @@ impl NodeKind {
     pub fn type_name(&self) -> &'static str {
         match self {
             NodeKind::Gain { .. } => "gain",
+            NodeKind::Cst(_) => "cst",
+            NodeKind::Lut { .. } => "lut",
         }
     }
 
@@ -86,6 +114,8 @@ impl NodeKind {
     pub fn default_name(&self) -> &'static str {
         match self {
             NodeKind::Gain { .. } => "Ganho",
+            NodeKind::Cst(_) => "CST",
+            NodeKind::Lut { .. } => "LUT",
         }
     }
 
@@ -113,6 +143,27 @@ impl NodeKind {
                 }
                 other => return Err(format!("gain node has no parameter \"{other}\" (master, r, g, b, rgb)")),
             },
+            NodeKind::Cst(c) => set_cst(c, name, value)?,
+            NodeKind::Lut { lut, intensity, interpolation } => match name {
+                "lut" => {
+                    let s = value.as_str().ok_or("lut: expected a library reference (\"lib:<id>\") or \"\"")?;
+                    if s.chars().count() > MAX_LUT_REF {
+                        return Err("lut: reference too long".into());
+                    }
+                    *lut = s.to_string();
+                }
+                "intensity" => {
+                    *intensity =
+                        value.as_f64().filter(|x| x.is_finite()).map(|x| (x as f32).clamp(0.0, 1.0)).ok_or("intensity: expected a number from 0 to 1")?
+                }
+                "interpolation" => {
+                    *interpolation = value
+                        .as_str()
+                        .and_then(|s| serde_json::from_value(serde_json::Value::String(s.to_string())).ok())
+                        .ok_or("interpolation: expected \"trilinear\" or \"tetrahedral\"")?
+                }
+                other => return Err(format!("lut node has no parameter \"{other}\" (lut, intensity, interpolation)")),
+            },
         }
         Ok(())
     }
@@ -121,8 +172,66 @@ impl NodeKind {
     fn sanitized(&self) -> Self {
         match self {
             NodeKind::Gain { master, rgb } => NodeKind::Gain { master: clamp_gain(*master), rgb: rgb.map(clamp_gain) },
+            NodeKind::Cst(c) => NodeKind::Cst(c.sanitized()),
+            NodeKind::Lut { lut, intensity, interpolation } => NodeKind::Lut {
+                lut: lut.chars().take(MAX_LUT_REF).collect(),
+                intensity: if intensity.is_finite() { intensity.clamp(0.0, 1.0) } else { 1.0 },
+                interpolation: *interpolation,
+            },
         }
     }
+}
+
+/// Set one CST parameter by its JSON name.
+fn set_cst(c: &mut crate::cst::Cst, name: &str, v: &serde_json::Value) -> Result<(), String> {
+    use crate::cst::{Curve, Gamut, GamutMapping, ToneMapping};
+    let text = |what: &str| v.as_str().ok_or_else(|| format!("{name}: expected {what}"));
+    let num = || v.as_f64().filter(|x| x.is_finite()).map(|x| x as f32).ok_or_else(|| format!("{name}: expected a finite number"));
+    const GAMUTS: &str = "sGamut3Cine, sGamut3, rec709, rec2020 or p3D65";
+    const CURVES: &str = "sLog3, gamma24, gamma22, srgb or linear";
+    match name {
+        "inputGamut" => c.input_gamut = Gamut::from_name(text(GAMUTS)?).ok_or_else(|| format!("{name}: {GAMUTS}"))?,
+        "outputGamut" => c.output_gamut = Gamut::from_name(text(GAMUTS)?).ok_or_else(|| format!("{name}: {GAMUTS}"))?,
+        "inputCurve" => c.input_curve = Curve::from_name(text(CURVES)?).ok_or_else(|| format!("{name}: {CURVES}"))?,
+        "outputCurve" => c.output_curve = Curve::from_name(text(CURVES)?).ok_or_else(|| format!("{name}: {CURVES}"))?,
+        "toneMapping" => {
+            c.tone_mapping = match text("\"none\" or \"filmic\"")? {
+                "none" => ToneMapping::None,
+                "filmic" => {
+                    let (white, mid, contrast) = crate::cst::FILMIC_DEFAULT;
+                    ToneMapping::Filmic { white, mid, contrast }
+                }
+                _ => return Err(format!("{name}: \"none\" or \"filmic\"")),
+            }
+        }
+        "gamutMapping" => {
+            c.gamut_mapping = match text("\"none\" or \"compress\"")? {
+                "none" => GamutMapping::None,
+                "compress" => GamutMapping::Compress,
+                _ => return Err(format!("{name}: \"none\" or \"compress\"")),
+            }
+        }
+        "white" | "mid" | "contrast" => {
+            let x = num()?;
+            let (mut w, mut m, mut k) = match c.tone_mapping {
+                ToneMapping::Filmic { white, mid, contrast } => (white, mid, contrast),
+                ToneMapping::None => crate::cst::FILMIC_DEFAULT,
+            };
+            match name {
+                "white" => w = x,
+                "mid" => m = x,
+                _ => k = x,
+            }
+            c.tone_mapping = ToneMapping::Filmic { white: w, mid: m, contrast: k };
+        }
+        other => {
+            return Err(format!(
+                "cst node has no parameter \"{other}\" (inputGamut, inputCurve, outputGamut, outputCurve, toneMapping, white, mid, contrast, gamutMapping)"
+            ));
+        }
+    }
+    *c = c.sanitized();
+    Ok(())
 }
 
 fn gain(v: &serde_json::Value) -> Option<f32> {
@@ -215,8 +324,10 @@ impl Grade {
 
     /// Whether evaluating the grade changes nothing (bypassed, no enabled node, or only identity nodes).
     pub fn is_identity(&self) -> bool {
-        self.active().all(|n| match n.kind {
-            NodeKind::Gain { master, rgb } => master == 1.0 && rgb == [1.0; 3],
+        self.active().all(|n| match &n.kind {
+            NodeKind::Gain { master, rgb } => *master == 1.0 && *rgb == [1.0; 3],
+            NodeKind::Cst(_) => false,
+            NodeKind::Lut { lut, intensity, .. } => lut.is_empty() || *intensity <= 0.0,
         })
     }
 }

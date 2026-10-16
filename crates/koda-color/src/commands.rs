@@ -38,14 +38,15 @@ pub fn commands() -> Vec<CommandSpec> {
             run: inspect,
             journal: false,
         },
-        cmd("koda.color.addNode", "Add Color Node", r#"{"clip":clipId?,"type":"gain","name":str?,"index":int?}"#, add_node),
+        cmd("koda.color.addNode", "Add Color Node", r#"{"clip":clipId?,"type":"gain"|"cst"|"lut","name":str?,"index":int?}"#, add_node),
         cmd("koda.color.removeNode", "Delete Color Node", r#"{"clip":clipId?,"node":nodeId}"#, remove_node),
         cmd("koda.color.moveNode", "Move Color Node", r#"{"clip":clipId?,"node":nodeId,"index":int}"#, move_node),
         cmd("koda.color.renameNode", "Rename Color Node", r#"{"clip":clipId?,"node":nodeId,"name":str}"#, rename_node),
         cmd("koda.color.setNodeEnabled", "Enable/Disable Color Node", r#"{"clip":clipId?,"node":nodeId,"enabled":bool?}"#, set_node_enabled),
-        cmd("koda.color.setParam", "Set Color Node Parameter", r#"{"clip":clipId?,"node":nodeId,"param":str,"value":number|[number]}"#, set_param),
+        cmd("koda.color.setParam", "Set Color Node Parameter", r#"{"clip":clipId?,"node":nodeId,"param":str,"value":number|[number]|str}"#, set_param),
         cmd("koda.color.setBypass", "Bypass Color Grade", r#"{"clip":clipId?,"bypass":bool?}"#, set_bypass),
         cmd("koda.color.setGrade", "Set Color Grade", r#"{"clip":clipId?,"grade":object}"#, set_grade_cmd),
+        cmd("koda.color.loadLut", "Load LUT into Color Node", r#"{"clip":clipId?,"node":nodeId,"path":str}"#, load_lut),
     ]
 }
 
@@ -101,7 +102,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn add_node(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "koda.color.addNode";
     let t = p.get("type").and_then(Value::as_str).unwrap_or("gain");
-    let kind = NodeKind::from_type(t).ok_or_else(|| bad(CMD, format!("unknown node type \"{t}\" (gain)")))?;
+    let kind = NodeKind::from_type(t).ok_or_else(|| bad(CMD, format!("unknown node type \"{t}\" (gain, cst, lut)")))?;
     let name = match p.get("name") {
         None => None,
         Some(v) => Some(v.as_str().ok_or_else(|| bad(CMD, "name: expected text"))?.to_string()),
@@ -181,4 +182,30 @@ fn set_grade_cmd(s: &mut Session, p: &Value) -> Result<Value> {
         *g = new;
         Ok(json!({ "nodes": g.nodes.len() }))
     })
+}
+
+/// Import a `.cube` / `.3dl` file into the project's LUT library (`lut.import`, which reuses an
+/// identical earlier import) and point a LUT node at it.
+fn load_lut(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.loadLut";
+    let n = node_id(CMD, p)?;
+    let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad(CMD, "path: expected a .cube or .3dl file"))?.to_string();
+    // the node must exist and be a LUT node before anything is imported
+    let id = target(s, CMD, p)?;
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, item) = seq.find_item(id).ok_or_else(|| bad(CMD, "clip not found"))?;
+    let g = store::grade_of(item).map_err(|e| bad(CMD, e))?;
+    match g.nodes.iter().find(|x| x.id == n).map(|x| &x.kind) {
+        Some(NodeKind::Lut { .. }) => {}
+        Some(_) => return Err(bad(CMD, format!("node {n} is not a LUT node"))),
+        None => return Err(bad(CMD, format!("no node {n} in this grade"))),
+    }
+    let imported = s.execute("lut.import", json!({ "path": path }))?;
+    let reference = imported.get("ref").and_then(Value::as_str).ok_or_else(|| bad(CMD, "the LUT library did not return a reference"))?.to_string();
+    let r2 = reference.clone();
+    edit_grade(s, CMD, "Load LUT into Color Node", p, move |g| {
+        g.node_mut(n)?.kind.set_param("lut", &Value::String(r2))?;
+        Ok(json!({ "node": n }))
+    })?;
+    Ok(json!({ "node": n, "lut": reference }))
 }

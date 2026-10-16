@@ -10,6 +10,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+filmcraft-color = { workspace = true }
 filmcraft-engine = { workspace = true }
 filmcraft-project = { workspace = true }
 filmcraft-render = { workspace = true }
@@ -18,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "tiff"] }
 filmcraft-frame = { workspace = true }
 filmcraft-gpu = { workspace = true }
 filmcraft-media = { workspace = true }

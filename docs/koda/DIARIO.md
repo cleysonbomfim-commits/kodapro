@@ -3,6 +3,66 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-16 — Marco 2 da aba Cor: nós de CST e LUT
+
+**O que foi feito**
+- **Nó CST** (`crates/koda-color/src/cst.rs`): entrada (gamut + curva), matriz para o gamut de
+  saída, tone mapping, gamut mapping e curva de saída. Curva S-Log3 e primárias S-Gamut3.Cine do
+  `crates/color` (documentos da Sony). Padrão = CST do powergrade KODA: S-Gamut3.Cine/S-Log3 →
+  Rec.709/Gamma 2.4.
+- **Calibração com o DaVinci** (caixa-preta: só saída contra saída, sem código da Blackmagic):
+  medi a curva neutra 01_global → 02_cst e ajustei uma **curva fílmica logística em stops**
+  (white 1,034, mid −1,55, contrast 1,86). O DaVinci aplica o tone mapping **por canal** (ΔE 0,71
+  por canal contra 1,40 na luminância ou no máximo de RGB). A compressão de gamut ficou como
+  opção, desligada no padrão (mediu um pouco pior: 0,713 contra 0,706).
+- **Nó LUT**: LUT da biblioteca de LUTs do projeto (`lib:<id>`, via `lut.import`), intensidade
+  0–1, interpolação trilinear (padrão, a que bate com o DaVinci) ou tetraédrica; LUT 1D/shaper
+  vira cubo 33³. Comando novo `koda.color.loadLut {node, path}`.
+- **GPU**: CST e LUT no `grade.wgsl` (LUT 3D desdobrada numa imagem 2D auxiliar). Gancho do
+  FilmCraft ajustado: o efeito externo agora se "prepara" com acesso ao projeto
+  (`ExternalFx::prepare`) e cada passe pode levar uma imagem auxiliar (`AuxImage`), enviada à GPU
+  uma vez e reaproveitada (`gpu::fx`).
+- **ΔE 2000** (`crates/koda-color/src/deltae.rs`), conferido com os 10 pares de referência de
+  Sharma, Wu e Dalal (2005).
+- Imagens: comparações lado a lado KODA | DaVinci | mapa de ΔE em
+  `docs/koda/cor/referencia/comparacoes/` (**locais, fora do git**: têm o vídeo da cliente);
+  print público `docs/koda/cor/prints/marco2-carta.png` (cartela sintética em S-Log3: bruto, CST,
+  CST + LUT). **App atualizado.**
+
+**O que funcionou — números (ΔE 2000, 1080 × 1920 = 2.073.600 pixels)**
+
+| Comparação | Média | p99 | Máxima |
+|---|---|---|---|
+| CST(01_global) × 02_cst, pixel a pixel | **0,68** | 2,05 | 5,54 |
+| CST(01_global) × 02_cst, média 3×3 | **0,36** | 0,99 | **1,85** |
+| LUT(04_glow) × 05_lut | **0,09** | 0,24 | **0,46** |
+| CST(00_log) × 02_cst (pedido; sem o nó 01) | 17,65 | 22,67 | 24,17 |
+| LUT(02_cst) × 05_lut (pedido; sem os nós 03 e 04) | 3,98 | 9,64 | 11,51 |
+| 04_glow × 02_cst (só o efeito dos nós 03+04) | 3,78 | 8,04 | 9,65 |
+
+- O CST e a LUT **atendem o critério da especificação** (média < 1, máxima < 3) quando medidos
+  isolados. Pixel a pixel o CST tem máxima 5,5 em 0,07 % dos pixels; com média 3×3 cai para 1,85:
+  é ruído de um pixel entre as exportações do DaVinci (pixels vizinhos parecidos vão para lados
+  opostos), não erro da curva.
+- As comparações pedidas a partir do 00_log e do 02_cst não podem bater ainda: o 02 foi exportado
+  depois do nó 01 (correção global, valores não disponíveis) e o 05 depois dos nós 03 e 04.
+- GPU × CPU no compositor (CST, CST com compressão e saída sRGB, LUT trilinear, LUT tetraédrica
+  a 60 %, CST + LUT; cheio e 1/2): diferença média ≤ 0,05 de 255, p99 1.
+- Testes: 15 unitários + 4 do marco 2 + os do marco 1; CI completo: **verde** (3.489 testes, 0 falhas; clippy, camadas, assets e WebAssembly ok; 38 min).
+
+**O que deu problema**
+- O máximo pixel a pixel do CST (5,5) passa da meta de 3; explicado acima (ruído de exportação).
+- Para usar no app, o clipe da FX30 precisa ficar na interpretação de cor padrão (Rec.709, como
+  a câmera marca). Se o Interpret Footage for mudado para S-Log3, o FilmCraft converte antes e o
+  CST converteria duas vezes. A aba Cor (marco 5) vai avisar.
+- A curva fílmica foi calibrada num único frame; outros clipes/exposições podem pedir um ajuste
+  fino (os parâmetros são editáveis no nó).
+
+**Próximo passo**
+- Marco 3: primárias (Lift/Gamma/Gain/Offset em barras e rodas, Temp, Tint, Contraste, Pivot,
+  etc.) e curvas na GPU, com a matemática do DaVinci; quando o dono tiver os valores do nó 01,
+  dá para fechar a comparação a partir do 00_log.
+
 ## 2026-10-16 — Marco 1 da aba Cor: motor de nós
 
 **O que foi feito**

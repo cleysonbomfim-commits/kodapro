@@ -271,7 +271,7 @@ impl FxOp {
             return None;
         }
         if let Some(x) = crate::external::find(&e.effect) {
-            return crate::external::op(x, e, crate::external::ExtCtx { t: cx.t, px_scale: cx.px_scale });
+            return crate::external::op(x, e, cx);
         }
         Some(match e.effect.as_str() {
             "brightness_contrast" => FxOp::BrightnessContrast { br: f(e, "brightness", cx) / 100.0 * 0.4, co: 1.0 + f(e, "contrast", cx) / 100.0 },

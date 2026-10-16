@@ -117,7 +117,7 @@ pub fn apply(img: &mut Image, e: &EffectInstance, cx: &FxCtx) {
         return;
     }
     if let Some(x) = crate::external::find(&e.effect) {
-        (x.cpu)(img, e, crate::external::ExtCtx { t: cx.t, px_scale: cx.px_scale });
+        crate::external::apply_cpu(x, img, e, cx);
         return;
     }
     if crate::vfx::apply(img, e, cx) {

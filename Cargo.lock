@@ -3470,6 +3470,7 @@ dependencies = [
 name = "koda-color"
 version = "0.8.0"
 dependencies = [
+ "filmcraft-color",
  "filmcraft-engine",
  "filmcraft-frame",
  "filmcraft-gpu",
@@ -3477,6 +3478,7 @@ dependencies = [
  "filmcraft-project",
  "filmcraft-render",
  "filmcraft-time",
+ "image",
  "pollster 0.4.0",
  "rayon",
  "serde",
