@@ -6,3 +6,7 @@ plan/
 .DS_Store
 .claude/worktrees/
 __pycache__/
+
+# Koda Pro: referências do DaVinci (frames de clientes, LUT comercial, powergrade). Só locais,
+# nunca no repositório público (docs/koda/DIARIO.md, 2026-10-15).
+/docs/koda/cor/referencia/

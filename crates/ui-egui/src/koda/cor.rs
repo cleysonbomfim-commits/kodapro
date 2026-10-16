@@ -155,17 +155,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let prim = Rect::from_min_size(bottom.min, vec2((bottom.width() - GAP) / 2.0, bottom.height()));
     let scope_r = Rect::from_min_max(pos2(prim.max.x + GAP, bottom.min.y), bottom.max);
 
-    let c = panel(app, ui, luts, "luts", &tl!("LUTs"), &tl!("Folder browser"));
+    let c = panel(app, ui, luts, "luts", tl!("LUTs"), tl!("Folder browser"));
     rows(ui, &t, c, &["Orson.cube", "Kodak 2383", "Fuji 3513", "Sony S-Log3", "Minhas LUTs", "Clientes"]);
 
-    let c = panel(app, ui, node_r, "nodes", &tl!("Node editor"), &tl!("Serial · names · enable/disable"));
+    let c = panel(app, ui, node_r, "nodes", tl!("Node editor"), tl!("Serial · names · enable/disable"));
     nodes(ui, &t, c);
 
-    let c = panel(app, ui, fx, "effects", &tl!("Effects"), &tl!("Drag onto a node"));
+    let c = panel(app, ui, fx, "effects", tl!("Effects"), tl!("Drag onto a node"));
     rows(ui, &t, c, &["Desfoque", "Nitidez", "Glow", "CST", "LUT", "Vinheta"]);
 
     // Clip strip: thumbnails with codec and timecode.
-    let c = panel(app, ui, clips, "clips", &tl!("Clips"), "");
+    let c = panel(app, ui, clips, "clips", tl!("Clips"), "");
     let p = ui.painter();
     for i in 0..6 {
         let r = Rect::from_min_size(pos2(c.min.x + 90.0 + i as f32 * 128.0, clips.min.y + 8.0), vec2(120.0, 48.0));
@@ -188,14 +188,14 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         p.circle_stroke(ctr, 8.0, Stroke::new(1.0, if i == 10 { KODA_GREEN } else { t.text_faint }));
     }
 
-    let c = panel(app, ui, prim, "primaries", &tl!("Primaries (bars)"), "");
+    let c = panel(app, ui, prim, "primaries", tl!("Primaries (bars)"), "");
     primaries(ui, &t, c);
 
-    let c = panel(app, ui, scope_r, "scopes", &tl!("Scopes"), "");
+    let c = panel(app, ui, scope_r, "scopes", tl!("Scopes"), "");
     scopes(ui, &t, c);
 
     // Viewer: the 9:16 picture, then before/after, split screen and transport.
-    let c = panel(app, ui, viewer, "viewer", &tl!("Viewer"), &tl!("Vertical video"));
+    let c = panel(app, ui, viewer, "viewer", tl!("Viewer"), tl!("Vertical video"));
     let p = ui.painter();
     let ph = (c.height() - 70.0).max(40.0);
     let pw = (ph * 9.0 / 16.0).min(c.width());

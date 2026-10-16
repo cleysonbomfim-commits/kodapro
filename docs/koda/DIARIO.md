@@ -3,6 +3,40 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-16 — CI da base: impasse na exportação encontrado e corrigido
+
+**O que foi feito**
+- `cargo xtask ci` completo, pedido antes do marco 1.
+- 1ª tentativa (15/10, noite): **travou por 12 horas** nos dois testes de fluxo real
+  (`apps/filmcraft-cli/tests/workflows.rs`: câmera → ProRes e celular → H.264). As pilhas
+  mostraram um **impasse causado pela correção 1** (cópia paralela do quadro do VideoToolbox):
+  a cópia rodava no pool do rayon de dentro do callback do VideoToolbox, e numa exportação todas
+  as threads do pool esperavam esse mesmo decodificador. O app instalado podia travar ao
+  exportar.
+- Correção: `crates/platform/src/par_copy.rs` copia em faixas com **threads próprias
+  temporárias** (`std::thread::scope`), nunca no pool compartilhado; `rayon` virou só dependência
+  de teste. Teste de regressão `copies_never_wait_for_a_busy_rayon_pool`: **com o código antigo
+  falha por tempo esgotado (impasse); com o novo passa**. Os dois testes de fluxo passam em
+  1,5 s. App reinstalado com a correção logo em seguida.
+- 2ª tentativa: parou no clippy por 11 avisos na prévia da aba Cor (`&tl!(...)`), que eu não
+  tinha passado no clippy. Corrigido.
+- 3ª tentativa: interrompida de propósito, porque ia falhar em 4 testes de tradução — a prévia
+  tinha textos novos só em português; o FilmCraft exige espanhol, chinês e japonês. Traduções
+  adicionadas.
+- `docs/koda/cor/referencia/` no `.gitignore` (frames de cliente, LUT comercial, powergrade);
+  `layout-aba-cor.png` com atribuição (obra do dono); especificações `ESPEC_COR_V1.md` e
+  `LAYOUT_PAGINA_COR.md` versionadas; regra "app atualizado" no `CLAUDE.md`.
+
+**Resultado do CI final** (base + correções + marco 1): **verde.** `cargo fmt --check` ok; `cargo clippy --workspace --all-targets --release -D warnings` ok; `cargo test --workspace --release`: **3.477 testes passaram, 0 falharam** (44 ignorados pelo próprio projeto, 313 suítes); `layers` ok; `assets` ok (65); `wasm` ok (50 crates) depois de instalar o alvo `wasm32-unknown-unknown` no rustup (faltava a biblioteca padrão para WebAssembly neste Mac; não era erro de código). Rodou em 27 min com o Mac impedido de dormir (`caffeinate`), porque quase tudo já estava compilado.
+
+**O que deu problema**
+- Todas as falhas de CI desta rodada foram causadas por mudanças minhas (correção 1 e prévia),
+  não pela base do FilmCraft.
+- O CI completo leva 1,5–2,5 h, quase tudo compilando os ~250 executáveis de teste em release.
+
+**Próximo passo**
+- Marco 1 (entrada acima).
+
 ## 2026-10-15 — Prévia visual da aba Cor
 
 **O que foi feito**
