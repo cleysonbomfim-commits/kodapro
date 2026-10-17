@@ -221,6 +221,8 @@ pub fn run(s: &mut Session, p: &Value) -> Result<Value> {
         let r = execute(proj, work, sources, previews.map(|d| (d, prev_dst)), &project_path, pr, &prog, &*services);
         let secs = t0.elapsed().as_secs_f64();
         let r = r.map(|bytes| filmcraft_export::Report {
+            encoder: String::new(),
+            fallback: None,
             path: project_path.clone(),
             frames: prog.done.load(Ordering::Relaxed),
             seconds: secs,

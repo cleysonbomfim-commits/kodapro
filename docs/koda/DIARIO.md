@@ -3,6 +3,63 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-17 — Export com codificação por hardware (VideoToolbox) por padrão
+
+**O que foi feito**
+- **Padrão ligado no Koda Pro:** o app e a CLI chamam `set_hardware_encoding_default(true)` ao
+  iniciar, então toda configuração de export nova (e todo preset sem o campo) usa o codificador do
+  sistema. O padrão do FilmCraft continua desligado (os testes dele dependem de arquivos idênticos
+  byte a byte); quem desmarcar "Hardware Encoding" continua em software.
+- **ProRes 422 por hardware** (novo, `crates/platform/src/videotoolbox_encode.rs` e
+  `hardware_encode.rs`): sessão VideoToolbox ProRes (Proxy, LT, 422, HQ) com entrada 4:2:2 de 10 bits
+  (`x422`), preenchida pela mesma conversão do codificador ProRes próprio
+  (`rgba_to_yuv422_10`), tags BT.709, todo quadro sync. ProRes 4444/XQ, alfa, HDR, tamanho ímpar e
+  pixel não quadrado ficam com o codificador próprio. H.264 e HEVC já tinham VideoToolbox.
+- **Fallback automático:** se o codificador de hardware falhar no meio, o export recomeça do zero
+  com o codificador de software (H.264 e ProRes; HEVC não tem software) e o relatório traz o motivo
+  (`fallback`). Se o hardware recusar a configuração logo no início, o software assume direto.
+- **Qual codificador:** o relatório do export traz `encoder` ("VideoToolbox (hardware)" ou
+  "FilmCraft (software)"), o status do export mostra o nome e a página Exportar tem a linha
+  **"Codificador em uso"** (`export.video.encoderInUse`), calculada sem abrir sessão
+  (`describe_video_encoder`). O ProRes ganhou também a caixa "Hardware Encoding".
+- Testes novos: `crates/platform/tests/prores_hardware.rs` (recusas, ida e volta 10 bits 4:2:2 pelo
+  nosso decodificador ProRes com PSNR > 45 dB por plano, export completo, nome no diálogo, e um
+  codificador "de hardware" simulado que falha no 3º quadro → export termina em software);
+  `crates/export/tests/hardware_default.rs`; teste de interface da linha "Codificador em uso". CI completo verde: **3.520 testes**, layers, assets e wasm ok.
+  **App atualizado.**
+
+**O que funcionou — export de 30 s (FX30 4K vertical 2160 × 3840, 29,97p, 900 quadros, todos na GPU)**
+
+| | Software (antes) | VideoToolbox (agora) |
+|---|---|---|
+| H.264 sem grade | 56,8 s | **33,5 s** |
+| H.264 com powergrade | 66,1 s | **41,1 s** |
+| HEVC sem grade | — (não havia software) | **33,2 s** |
+| HEVC com powergrade | — | **41,1 s** |
+| ProRes 422 HQ sem grade | 65,6 s | **33,8 s** |
+| ProRes 422 HQ com powergrade | 72,1 s | **44,3 s** |
+
+Cerca de **1,7× mais rápido**; agora quem limita é a decodificação e a renderização (~27
+quadros/s sem grade, ~21 com o powergrade), não mais o codificador.
+
+**Qualidade** (3 s do powergrade, comparado com o ProRes de software como referência, ffmpeg só
+como oráculo):
+- ProRes HQ hardware: `prores`, perfil **HQ**, **yuv422p10le** (4:2:2 10 bits), BT.709 nas tags;
+  PSNR contra o ProRes de software **Y 59,3 dB, U 63,8 dB, V 63,0 dB** (praticamente igual);
+  bitrate igual (~880 Mbps).
+- H.264 hardware: PSNR Y **44,7 dB** contra 44,2 dB do software, com **metade do tamanho**
+  (11 contra 22 Mbps no mesmo alvo). HEVC: Y 44,9 dB.
+
+**Decisões para revisar**
+- No H.264, o VideoToolbox entrega menos que o bitrate pedido em imagens fáceis (o clipe log sem grade
+  saiu com ~6 Mbps para alvo de 20): a qualidade medida é igual ou melhor, mas, se precisar de
+  bitrate exato para entrega, use CBR.
+- O fallback no meio do export refaz o arquivo inteiro em software (não dá para emendar dois
+  codificadores no mesmo fluxo).
+
+**Próximo passo**
+- O que o dono escolher no PLANO.
+
 ## 2026-10-17 — Marco 7 da aba Cor: desempenho e polimento
 
 **O que foi feito**

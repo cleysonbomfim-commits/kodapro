@@ -691,6 +691,8 @@ pub fn render(s: &mut Session, mode: RenderMode, p: &Value) -> Result<Value> {
         }
         let secs = t0.elapsed().as_secs_f64();
         let r = outcome.map(|_| filmcraft_export::Report {
+            encoder: String::new(),
+            fallback: None,
             path: dir.to_string_lossy().to_string(),
             frames: done_frames,
             seconds: secs,
@@ -778,6 +780,8 @@ pub fn render_audio(s: &mut Session, p: &Value) -> Result<Value> {
         }
         let secs = t0.elapsed().as_secs_f64();
         let r = outcome.map(|_| filmcraft_export::Report {
+            encoder: String::new(),
+            fallback: None,
             path: dir.to_string_lossy().to_string(),
             frames: 0,
             seconds: secs,

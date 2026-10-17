@@ -3641,3 +3641,4 @@
 	Double conversion	Conversão dupla
 	Use the default interpretation	Usar a interpretação padrão
 	The clip is interpreted as {space}: it is converted before the grade and the CST node converts it again.	O clipe está interpretado como {space}: ele é convertido antes da grade e o nó CST converte de novo.
+	Encoder in use	Codificador em uso

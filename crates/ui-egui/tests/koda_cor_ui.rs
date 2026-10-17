@@ -277,3 +277,15 @@ fn dragging_a_curve_point_moves_that_point() {
     assert!(mid[1].as_f64().unwrap() > mid[0].as_f64().unwrap() + 0.03, "the middle point went up: {pts:?}");
     assert_eq!(pts[2], json!([1.0, 1.0]), "the end point stayed: {pts:?}");
 }
+
+/// The Export page names the encoder the export will use (FilmCraft's own here: the UI tests do
+/// not register the platform's hardware encoders).
+#[test]
+fn the_export_page_names_the_encoder() {
+    let mut d = Driver::demo();
+    d.click("pages.export");
+    d.frames(4);
+    let v = d.ok("ui.elements", json!({"prefix": "export.video.encoderInUse"}));
+    let label = v.as_array().and_then(|a| a.first()).map(|e| e["label"].clone()).unwrap_or_default();
+    assert_eq!(label, json!(filmcraft_export::SOFTWARE_ENCODER), "{v}");
+}

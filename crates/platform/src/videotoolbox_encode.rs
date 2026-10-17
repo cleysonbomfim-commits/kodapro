@@ -1,4 +1,4 @@
-//! VideoToolbox (macOS) hardware H.264 and HEVC encoding.
+//! VideoToolbox (macOS) hardware H.264, HEVC and ProRes 422 encoding.
 //!
 //! An FFI module of this crate (docs/adr/0001-platform-ffi.md): every `unsafe` block has a
 //! `// SAFETY:` comment, no panic may unwind into VideoToolbox (the output callback runs under
@@ -11,7 +11,10 @@
 //!
 //! Pictures go in as 8-bit 4:2:0 (NV12) pixel buffers filled from planar BT.709 limited-range
 //! Y'CbCr, the layout of `filmcraft_export::rgba_to_yuv420_8`, so the colours match the built-in
-//! encoder's. VideoToolbox encodes asynchronously; its output callback (on a VideoToolbox thread)
+//! encoder's. ProRes 422 (KODA Pro) takes 10-bit 4:2:2 (`x422`: biplanar, 16-bit samples with the
+//! value in the top 10 bits) filled from `filmcraft_export::rgba_to_yuv422_10`, the built-in ProRes
+//! encoder's own conversion; its frames are intra-coded, every one a sync sample, with no
+//! parameter sets. VideoToolbox encodes asynchronously; its output callback (on a VideoToolbox thread)
 //! copies each compressed frame (length-prefixed NAL units) into a queue that [`VtEncoder::encode`]
 //! and [`VtEncoder::flush`] drain.
 //!
@@ -48,6 +51,8 @@ use objc2_video_toolbox::{
 
 /// The pixel format of the buffers we hand over: biplanar Y + interleaved CbCr, video range.
 const NV12_VIDEO: u32 = u32::from_be_bytes(*b"420v");
+/// ProRes input: biplanar 10-bit 4:2:2, video range, 16-bit little-endian samples (value << 6).
+const X422_VIDEO: u32 = u32::from_be_bytes(*b"x422");
 /// Largest compressed frame accepted from the callback (a sanity cap on a size we do not control).
 const MAX_FRAME_BYTES: usize = 256 << 20;
 /// Largest picture the hardware encoder is asked for.
@@ -58,6 +63,28 @@ const MAX_SIDE: u32 = 8192;
 pub enum VtCodec {
     H264,
     Hevc,
+    ProRes,
+}
+
+/// The Apple ProRes 422 flavours VideoToolbox encodes (4444 stays with the built-in encoder).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProResKind {
+    Proxy,
+    Lt,
+    Standard,
+    Hq,
+}
+
+impl ProResKind {
+    /// The codec type (and MOV sample entry) four-character code.
+    pub fn fourcc(self) -> u32 {
+        u32::from_be_bytes(match self {
+            ProResKind::Proxy => *b"apco",
+            ProResKind::Lt => *b"apcs",
+            ProResKind::Standard => *b"apcn",
+            ProResKind::Hq => *b"apch",
+        })
+    }
 }
 
 /// H.264 and HEVC profiles VideoToolbox offers (the profile also picks the codec).
@@ -68,6 +95,8 @@ pub enum VtProfile {
     High,
     /// HEVC Main: 8-bit 4:2:0.
     HevcMain,
+    /// Apple ProRes 422 (10-bit 4:2:2, intra).
+    ProRes(ProResKind),
 }
 
 impl VtProfile {
@@ -75,7 +104,13 @@ impl VtProfile {
         match self {
             VtProfile::Baseline | VtProfile::Main | VtProfile::High => VtCodec::H264,
             VtProfile::HevcMain => VtCodec::Hevc,
+            VtProfile::ProRes(_) => VtCodec::ProRes,
         }
+    }
+
+    /// The pixel format the session takes.
+    fn pixel_format(self) -> u32 {
+        if matches!(self, VtProfile::ProRes(_)) { X422_VIDEO } else { NV12_VIDEO }
     }
 }
 
@@ -204,6 +239,7 @@ fn is_sync(data: &[u8], codec: VtCodec) -> Result<bool, String> {
         key |= match codec {
             VtCodec::H264 => header & 0x1f == 5,
             VtCodec::Hevc => (16..=21).contains(&((header >> 1) & 0x3f)),
+            VtCodec::ProRes => true,
         };
         pos = end;
     }
@@ -240,6 +276,7 @@ fn read_param_sets(sample: &CMSampleBuffer, codec: VtCodec) -> Result<ParamSets,
             match codec {
                 VtCodec::H264 => CMVideoFormatDescriptionGetH264ParameterSetAtIndex(&format, index, &mut ptr, &mut size, &mut total, &mut nal_len),
                 VtCodec::Hevc => CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(&format, index, &mut ptr, &mut size, &mut total, &mut nal_len),
+                VtCodec::ProRes => return Err("ProRes has no parameter sets".into()),
             }
         };
         if status != 0 {
@@ -298,6 +335,10 @@ fn read_packet(sample: &CMSampleBuffer, shared: &Shared) -> Result<VtPacket, Str
     let (pts, dts) = unsafe { (sample.presentation_time_stamp(), sample.decode_time_stamp()) };
     let pts = ticks(pts, shared.timescale).ok_or("compressed frame without a presentation time")?;
     let dts = ticks(dts, shared.timescale).unwrap_or(pts);
+    // ProRes: every frame is intra-coded, and the sample is the whole frame (no NAL units)
+    if shared.codec == VtCodec::ProRes {
+        return Ok(VtPacket { data, key: true, pts, dts });
+    }
     let key = is_sync(&data, shared.codec)?;
     {
         let mut params = shared.params.lock().unwrap_or_else(PoisonError::into_inner);
@@ -400,6 +441,41 @@ fn fill(pb: &CVImageBuffer, w: usize, h: usize, y: &[u8], u: &[u8], v: &[u8]) ->
     Ok(())
 }
 
+/// Copy planar 10-bit 4:2:2 Y / U / V (`w`×`h` luma, `⌈w/2⌉`×`h` chroma, tightly packed) into an
+/// `x422` buffer (16-bit samples, value in the top 10 bits, little-endian).
+fn fill_422_10(pb: &CVImageBuffer, w: usize, h: usize, y: &[u16], u: &[u16], v: &[u16]) -> Result<(), String> {
+    let cw = w.div_ceil(2);
+    if y.len() < w * h || u.len() < cw * h || v.len() < cw * h {
+        return Err("the Y'CbCr planes are smaller than the picture".into());
+    }
+    // SAFETY: `pb` is a valid pixel buffer (the caller holds it retained).
+    if unsafe { CVPixelBufferLockBaseAddress(pb, CVPixelBufferLockFlags(0)) } != 0 {
+        return Err("cannot lock the input buffer".into());
+    }
+    let mut lock = Locked(pb);
+    let (luma, ls, lw, lh) = plane_mut(pb, &mut lock, 0)?;
+    if lw < w || lh < h || ls < w * 2 {
+        return Err("the input buffer's luma plane is smaller than the picture".into());
+    }
+    for (row, src) in luma.chunks_mut(ls).zip(y.chunks_exact(w)).take(h) {
+        for (dst, &val) in row.as_chunks_mut::<2>().0.iter_mut().zip(src) {
+            *dst = (val.min(1023) << 6).to_le_bytes();
+        }
+    }
+    let (chroma, cs, cpw, cph) = plane_mut(pb, &mut lock, 1)?;
+    if cpw < cw || cph < h || cs < cw * 4 {
+        return Err("the input buffer's chroma plane is smaller than the picture".into());
+    }
+    for ((row, us), vs) in chroma.chunks_mut(cs).zip(u.chunks_exact(cw)).zip(v.chunks_exact(cw)).take(h) {
+        for ((quad, &cb), &cr) in row.as_chunks_mut::<4>().0.iter_mut().zip(us).zip(vs) {
+            let (b, r) = ((cb.min(1023) << 6).to_le_bytes(), (cr.min(1023) << 6).to_le_bytes());
+            *quad = [b[0], b[1], r[0], r[1]];
+        }
+    }
+    drop(lock);
+    Ok(())
+}
+
 /// A hardware H.264 or HEVC encoder: feed pictures, collect compressed frames (in presentation
 /// order, which is decoding order since nothing is reordered).
 pub struct VtEncoder {
@@ -474,7 +550,7 @@ impl VtEncoder {
         let require_key: &CFString = unsafe { kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder };
         let spec = CFDictionary::<CFString, CFType>::from_slices(&[require_key], &[CFBoolean::new(true).as_ref()]);
 
-        let (pf, cw, ch) = (CFNumber::new_i32(NV12_VIDEO as i32), CFNumber::new_i32(w as i32), CFNumber::new_i32(h as i32));
+        let (pf, cw, ch) = (CFNumber::new_i32(config.profile.pixel_format() as i32), CFNumber::new_i32(w as i32), CFNumber::new_i32(h as i32));
         let io = CFDictionary::<CFString, CFType>::from_slices(&[], &[]);
         // SAFETY: reading immutable framework constants.
         let (pf_key, w_key, h_key, io_key): (&CFString, &CFString, &CFString, &CFString) =
@@ -490,9 +566,10 @@ impl VtEncoder {
                 None,
                 w as i32,
                 h as i32,
-                match codec {
-                    VtCodec::H264 => kCMVideoCodecType_H264,
-                    VtCodec::Hevc => kCMVideoCodecType_HEVC,
+                match config.profile {
+                    VtProfile::ProRes(kind) => kind.fourcc(),
+                    _ if codec == VtCodec::Hevc => kCMVideoCodecType_HEVC,
+                    _ => kCMVideoCodecType_H264,
                 },
                 Some(spec.as_ref()),
                 Some(attrs.as_ref()),
@@ -515,6 +592,14 @@ impl VtEncoder {
     }
 
     fn configure(session: &VTCompressionSession, c: &VtConfig) -> Result<(), String> {
+        if let VtProfile::ProRes(_) = c.profile {
+            // intra-only, no bitrate: the flavour sets the data rate; offline quality, BT.709 tags
+            // SAFETY: reading an immutable framework constant.
+            let realtime = unsafe { kVTCompressionPropertyKey_RealTime };
+            let _ = set_bool(session, realtime, false);
+            Self::tag_bt709(session);
+            return Ok(());
+        }
         // SAFETY: reading immutable framework constants.
         let (profile_key, profile) = unsafe {
             (
@@ -523,7 +608,7 @@ impl VtEncoder {
                     VtProfile::Baseline => kVTProfileLevel_H264_Baseline_AutoLevel,
                     VtProfile::Main => kVTProfileLevel_H264_Main_AutoLevel,
                     VtProfile::High => kVTProfileLevel_H264_High_AutoLevel,
-                    VtProfile::HevcMain => kVTProfileLevel_HEVC_Main_AutoLevel,
+                    VtProfile::HevcMain | VtProfile::ProRes(_) => kVTProfileLevel_HEVC_Main_AutoLevel,
                 },
             )
         };
@@ -570,7 +655,12 @@ impl VtEncoder {
             }
         }
 
-        // BT.709, like the pictures we convert: written to the stream's VUI
+        Self::tag_bt709(session);
+        Ok(())
+    }
+
+    /// BT.709, like the pictures we convert: written to the stream's VUI (or the ProRes frame header).
+    fn tag_bt709(session: &VTCompressionSession) {
         // SAFETY: reading immutable framework constants.
         let (pk, tk, mk, pv, tv, mv): (&CFString, &CFString, &CFString, &CFString, &CFString, &CFString) = unsafe {
             (
@@ -585,7 +675,6 @@ impl VtEncoder {
         let _ = set_value(session, pk, pv.as_ref());
         let _ = set_value(session, tk, tv.as_ref());
         let _ = set_value(session, mk, mv.as_ref());
-        Ok(())
     }
 
     /// Whether VideoToolbox says this session runs on a hardware encoder. The session is created
@@ -625,7 +714,7 @@ impl VtEncoder {
                     None,
                     self.config.width as usize,
                     self.config.height as usize,
-                    NV12_VIDEO,
+                    self.config.profile.pixel_format(),
                     Some(self.attrs.as_ref()),
                     NonNull::from(&mut raw),
                 )
@@ -639,13 +728,31 @@ impl VtEncoder {
     /// Submit picture number `index` (planar BT.709 limited-range Y'CbCr, tightly packed) and return
     /// the compressed frames that came out meanwhile.
     pub fn encode(&mut self, index: u64, y: &[u8], u: &[u8], v: &[u8]) -> Result<Vec<VtPacket>, String> {
+        if self.config.profile.codec() == VtCodec::ProRes {
+            return Err("a ProRes session takes 10-bit 4:2:2 pictures (encode_422_10)".into());
+        }
         let buffer = self.new_buffer()?;
         fill(&buffer, self.config.width as usize, self.config.height as usize, y, u, v)?;
+        self.submit(index, &buffer)
+    }
+
+    /// Submit picture number `index` of a ProRes session: planar 10-bit 4:2:2 BT.709 limited-range
+    /// Y'CbCr (`⌈w/2⌉`-wide chroma), tightly packed.
+    pub fn encode_422_10(&mut self, index: u64, y: &[u16], u: &[u16], v: &[u16]) -> Result<Vec<VtPacket>, String> {
+        if self.config.profile.codec() != VtCodec::ProRes {
+            return Err("only a ProRes session takes 10-bit 4:2:2 pictures".into());
+        }
+        let buffer = self.new_buffer()?;
+        fill_422_10(&buffer, self.config.width as usize, self.config.height as usize, y, u, v)?;
+        self.submit(index, &buffer)
+    }
+
+    fn submit(&mut self, index: u64, buffer: &CVImageBuffer) -> Result<Vec<VtPacket>, String> {
         let value = i64::try_from(index).ok().and_then(|i| i.checked_mul(i64::from(self.config.frame_duration))).ok_or("frame index out of range")?;
         let (pts, duration) = (cm_time(value, self.config.timescale), cm_time(i64::from(self.config.frame_duration), self.config.timescale));
         // SAFETY: the session and buffer are valid (VideoToolbox retains the buffer as long as it
         // needs it); no frame properties, refcon or info-flags out-pointer.
-        let status = unsafe { self.session.session.encode_frame(&buffer, pts, duration, None, std::ptr::null_mut(), std::ptr::null_mut()) };
+        let status = unsafe { self.session.session.encode_frame(buffer, pts, duration, None, std::ptr::null_mut(), std::ptr::null_mut()) };
         if status != 0 {
             return Err(format!("VTCompressionSessionEncodeFrame failed ({status})"));
         }

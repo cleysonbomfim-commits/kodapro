@@ -77,6 +77,8 @@ pub fn register() -> Availability {
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);
         filmcraft_export::register_encoder(hardware_encode::videotoolbox_encoder_factory);
+        filmcraft_export::register_encoder(hardware_encode::videotoolbox_prores_factory);
+        filmcraft_export::register_encoder_describer(hardware_encode::describe);
         filmcraft_export::register_format_probe(filmcraft_export::Format::Hevc, hardware_encode::hevc_available);
         // the probe creates a hardware session (about 0.1 s): answer it now, off the UI thread,
         // before the first draw of the format list asks

@@ -689,6 +689,15 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             check(ui, reg, "export.video.alpha", &mut s.alpha, tl!("Include Alpha Channel"));
         });
     }
+    // KODA Pro: which encoder this export will use (VideoToolbox on Apple silicon, else FilmCraft's own)
+    if matches!(s.video_format(), Format::H264 | Format::Hevc | Format::ProRes) {
+        let (w, h) = s.frame_size.unwrap_or((seq_w, seq_h));
+        let name = filmcraft_export::describe_video_encoder(w, h, s.frame_rate.unwrap_or(FrameRate::FPS_29_97), s);
+        row(ui, t, tl!("Encoder in use"), |ui| {
+            let r = ui.label(egui::RichText::new(&name).strong());
+            reg.add("export.video.encoderInUse", r.rect, &name);
+        });
+    }
     match s.video_format() {
         f @ (Format::H264 | Format::Hevc | Format::Av1) => {
             // H.265 and AV1: hardware encoders only (one profile, level chosen by the encoder)
@@ -791,6 +800,13 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
             }
         }
         Format::ProRes => {
+            // ProRes 422 has a hardware encoder on Apple silicon (M1 Pro / Max and later); 4444 is built-in
+            row(ui, t, "Hardware Encoding", |ui| {
+                let mut on = s.hardware_encoding == HardwareEncoding::Auto;
+                if check(ui, reg, "export.video.hardwareEncodingProRes", &mut on, "Use the hardware encoder when available") {
+                    s.hardware_encoding = if on { HardwareEncoding::Auto } else { HardwareEncoding::Off };
+                }
+            });
             row(ui, t, tl!("Profile"), |ui| {
                 let keys = ["proxy", "lt", "standard", "hq", "4444", "4444xq"];
                 let labels =

@@ -61,18 +61,32 @@ impl H264Profile {
     }
 }
 
-/// Export ▸ Hardware encoding: whether H.264 may be encoded by the system's hardware video encoder
-/// (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows) instead of FilmCraft's own encoder. Off
-/// by default: hardware encoders make different streams, and exports are otherwise byte-identical
-/// from run to run and machine to machine.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Export ▸ Hardware encoding: whether H.264 (and ProRes 422 where the system has it) may be encoded
+/// by the system's hardware video encoder (VideoToolbox on macOS, NVENC on NVIDIA GPUs on Windows)
+/// instead of FilmCraft's own encoder. Off by default: hardware encoders make different streams, and
+/// exports are otherwise byte-identical from run to run and machine to machine. An app may make
+/// Auto the default for new settings with [`set_hardware_encoding_default`] (KODA Pro does).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HardwareEncoding {
-    #[default]
     Off,
     /// Use the hardware encoder when the system has one and it takes the settings; otherwise the
     /// software encoder.
     Auto,
+}
+
+static HARDWARE_ENCODING_AUTO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Make [`HardwareEncoding::Auto`] (or `Off`) the default of new export settings and of settings
+/// read without the field (presets). Call once at startup, before settings are made.
+pub fn set_hardware_encoding_default(auto: bool) {
+    HARDWARE_ENCODING_AUTO.store(auto, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl Default for HardwareEncoding {
+    fn default() -> Self {
+        if HARDWARE_ENCODING_AUTO.load(std::sync::atomic::Ordering::Relaxed) { HardwareEncoding::Auto } else { HardwareEncoding::Off }
+    }
 }
 
 /// Whether the picture of an export may be composited on the GPU (`filmcraft-gpu`'s off-screen

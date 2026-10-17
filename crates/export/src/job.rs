@@ -214,6 +214,16 @@ fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Resu
 }
 
 impl Exporter {
+    /// The video encoder's name ([`VideoEncoder::name`]).
+    pub fn encoder_name(&self) -> String {
+        self.venc.name()
+    }
+
+    /// Whether the video encoder is a system hardware encoder.
+    pub fn hardware_encoder(&self) -> bool {
+        self.venc.is_hardware()
+    }
+
     /// Set up an export (encoder, output size, colour signalling); sets `progress.total`.
     pub fn new(project: Arc<Project>, seq: ItemId, settings: &ExportSettings, progress: &Progress) -> Result<Self> {
         timed(Stage::Setup, || Self::set_up(project, seq, settings, progress))
@@ -457,7 +467,7 @@ impl Exporter {
             *progress.loudness.lock().unwrap_or_else(|e| e.into_inner()) = a.loudness;
             self.measured = true;
             if !self.settings.part_of_batch {
-                progress.set_status(format!("Exporting {} frames ({})", self.frames(), self.settings.format.label()));
+                progress.set_status(format!("Exporting {} frames ({}, {})", self.frames(), self.settings.format.label(), self.venc.name()));
             }
             return Ok(Step::Progress);
         }
@@ -522,6 +532,8 @@ impl Exporter {
             bytes,
             render_fps: nframes as f64 / secs.max(1e-6),
             extra_files,
+            encoder: self.venc.name(),
+            fallback: None,
         }))
     }
 

@@ -713,6 +713,14 @@ pub struct Report {
     /// Further files written besides `path` (MXF OP-Atom audio files).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_files: Vec<String>,
+    /// The video encoder that wrote the file ([`VideoEncoder::name`]); empty for audio-only and
+    /// image exports.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub encoder: String,
+    /// Why the hardware encoder was given up for the software one, when it failed mid-export and
+    /// the export ran again ([`export`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 }
 
 /// A packet produced by a video encoder.
@@ -748,6 +756,48 @@ pub trait VideoEncoder: Send {
     /// First-pass statistics of a two-pass encode (H.264).
     fn pass_stats(&self) -> Option<filmcraft_h264enc::PassStats> {
         None
+    }
+    /// Who encodes, for the export dialog and the report ("FilmCraft (software)",
+    /// "VideoToolbox (hardware)").
+    fn name(&self) -> String {
+        SOFTWARE_ENCODER.to_string()
+    }
+    /// Whether a system hardware encoder does the work (an export that fails with one retries in
+    /// software, see [`export`]).
+    fn is_hardware(&self) -> bool {
+        false
+    }
+}
+
+/// [`VideoEncoder::name`] of FilmCraft's own encoders.
+pub const SOFTWARE_ENCODER: &str = "FilmCraft (software)";
+
+/// Says which encoder an export would use, without creating it: a describer per platform
+/// ([`register_encoder_describer`]) answers for the formats its factory takes, `None` otherwise.
+pub type EncoderDescriber = fn(Format, u32, u32, FrameRate, &ExportSettings) -> Option<String>;
+
+fn describers() -> &'static RwLock<Vec<EncoderDescriber>> {
+    static D: OnceLock<RwLock<Vec<EncoderDescriber>>> = OnceLock::new();
+    D.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Register a describer of the encoder registered with [`register_encoder`].
+pub fn register_encoder_describer(f: EncoderDescriber) {
+    let mut g = describers().write().unwrap_or_else(|e| e.into_inner());
+    if !g.iter().any(|x| std::ptr::fn_addr_eq(*x, f)) {
+        g.insert(0, f);
+    }
+}
+
+/// The encoder an export with `s` at `w`×`h` would use: a registered describer's answer, else
+/// FilmCraft's own encoder (or "not available" for a format that has none here).
+pub fn describe_video_encoder(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> String {
+    let format = s.video_format();
+    let found = describers().read().unwrap_or_else(|e| e.into_inner()).iter().find_map(|d| d(format, w, h, rate, s));
+    match found {
+        Some(name) => name,
+        None if matches!(format, Format::Hevc | Format::Av1) => "not available on this system".to_string(),
+        None => SOFTWARE_ENCODER.to_string(),
     }
 }
 
@@ -1838,18 +1888,46 @@ pub fn encode_still_with(format: Format, rgba: Vec<u8>, w: u32, h: u32, alpha: b
 }
 
 /// Run an export (blocking; call from a worker thread).
+/// A stepped export to the end; `hardware` tells whether its video encoder was a hardware one.
+fn run_stepped(
+    project: &Arc<Project>,
+    seq: ItemId,
+    settings: &ExportSettings,
+    sources: &dyn SourceProvider,
+    progress: &Progress,
+    hardware: &mut bool,
+) -> Result<Report> {
+    let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
+    *hardware = ex.hardware_encoder();
+    loop {
+        match ex.step(sources, progress)? {
+            Step::Progress => {}
+            Step::Done(r) => return Ok(r),
+            // only asynchronous (web) sources defer; a blocking export cannot wait for them
+            Step::Pending => return Err(ExportError::Io("media data is still loading; run the export as a stepped job".into())),
+        }
+    }
+}
+
 pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, sources: &dyn SourceProvider, progress: &Progress) -> Result<Report> {
     settings.validate()?;
     if stepped(settings.format) {
-        let mut ex = Exporter::new(project.clone(), seq, settings, progress)?;
-        loop {
-            match ex.step(sources, progress)? {
-                Step::Progress => {}
-                Step::Done(r) => return Ok(r),
-                // only asynchronous (web) sources defer; a blocking export cannot wait for them
-                Step::Pending => return Err(ExportError::Io("media data is still loading; run the export as a stepped job".into())),
+        let mut hardware = false;
+        let first = run_stepped(project, seq, settings, sources, progress, &mut hardware);
+        return match first {
+            // A hardware encoder that fails mid-export cannot hand its stream over: the export runs
+            // again with FilmCraft's own encoder (when the format has one), and the report says why.
+            Err(e) if hardware && !matches!(e, ExportError::Cancelled) && !matches!(settings.video_format(), Format::Hevc | Format::Av1) => {
+                progress.set_status(format!("Hardware encoding failed ({e}); exporting again with the software encoder"));
+                let soft = ExportSettings { hardware_encoding: HardwareEncoding::Off, ..settings.clone() };
+                progress.done.store(0, Ordering::Relaxed);
+                let mut ignored = false;
+                let mut r = run_stepped(project, seq, &soft, sources, progress, &mut ignored)?;
+                r.fallback = Some(e.to_string());
+                Ok(r)
             }
-        }
+            other => other,
+        };
     }
     let t0 = web_time::Instant::now();
     let range = export_range(project, seq, settings)?;
@@ -1995,7 +2073,16 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
         progress.finished.store(true, Ordering::Relaxed);
         progress.set_status(format!("Done in {secs:.1}s"));
     }
-    Ok(Report { path: settings.path.clone(), frames: nframes, seconds: secs, bytes, render_fps: nframes as f64 / secs.max(1e-6), extra_files: Vec::new() })
+    Ok(Report {
+        path: settings.path.clone(),
+        frames: nframes,
+        seconds: secs,
+        bytes,
+        render_fps: nframes as f64 / secs.max(1e-6),
+        extra_files: Vec::new(),
+        encoder: String::new(),
+        fallback: None,
+    })
 }
 
 #[cfg(test)]

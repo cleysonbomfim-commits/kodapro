@@ -192,6 +192,8 @@ fn detect(s: &mut Session, p: &Value) -> Result<Value> {
             None => {
                 *lock(&out) = Some(found);
                 Ok(filmcraft_export::Report {
+                    encoder: String::new(),
+                    fallback: None,
                     path: String::new(),
                     frames: done,
                     seconds: secs,

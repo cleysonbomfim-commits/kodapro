@@ -19,7 +19,10 @@ use filmcraft_export::{BitrateMode, EncodedPacket, EncoderFrame, ExportError, Ex
 use filmcraft_isobmff::{AvcConfig, HevcConfig, SampleEntry};
 use filmcraft_time::FrameRate;
 
-use crate::videotoolbox_encode::{ParamSets, VtCodec, VtConfig, VtEncoder, VtPacket, VtProfile, VtRate};
+use crate::videotoolbox_encode::{ParamSets, ProResKind, VtCodec, VtConfig, VtEncoder, VtPacket, VtProfile, VtRate};
+
+/// [`VideoEncoder::name`] of the VideoToolbox encoders.
+pub const VT_HARDWARE: &str = "VideoToolbox (hardware)";
 
 /// The hardware encoder's configuration for an export, or why it is not used for it.
 pub fn config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result<VtConfig, String> {
@@ -205,7 +208,17 @@ impl VideoEncoder for HardwareEncoder {
             }
             // `encode` refuses to go on without a usable record, so a stream that got this far has one
             (VtCodec::Hevc, p) => SampleEntry::hevc(p.as_ref().and_then(|p| hevc_config(p).ok()).unwrap_or_default(), w, h),
+            // not made by this encoder (ProRes sessions are `ProResHardware`)
+            (VtCodec::ProRes, _) => SampleEntry::prores(filmcraft_isobmff::FourCc(ProResKind::Hq.fourcc().to_be_bytes()), w, h),
         }
+    }
+
+    fn name(&self) -> String {
+        VT_HARDWARE.to_string()
+    }
+
+    fn is_hardware(&self) -> bool {
+        true
     }
 
     fn timescale(&self) -> u32 {
@@ -241,5 +254,191 @@ impl VideoEncoder for HardwareEncoder {
     fn flush(&mut self) -> filmcraft_export::Result<Vec<EncodedPacket>> {
         let packets = self.vt.flush().map_err(ExportError::Encode)?;
         self.samples(packets)
+    }
+}
+
+// ---- ProRes 422 (KODA Pro) ----
+
+/// The ProRes 422 flavour of an export's `prores_profile`, or `None` for 4444 (built-in encoder).
+/// (The names of `filmcraft_export::prores_profile`; anything else is HQ.)
+pub fn prores_kind(profile: &str) -> Option<ProResKind> {
+    match profile.to_ascii_lowercase().as_str() {
+        "proxy" => Some(ProResKind::Proxy),
+        "lt" => Some(ProResKind::Lt),
+        "standard" | "422" => Some(ProResKind::Standard),
+        "4444" | "4444xq" | "4444 xq" | "4444-xq" | "xq" => None,
+        _ => Some(ProResKind::Hq),
+    }
+}
+
+/// The hardware ProRes configuration of an export, or why it is not used for it.
+pub fn prores_config_for(w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Result<VtConfig, String> {
+    if s.hardware_encoding != HardwareEncoding::Auto {
+        return Err("hardware encoding is off".into());
+    }
+    let kind = prores_kind(&s.prores_profile).ok_or("ProRes 4444")?;
+    if s.keeps_alpha() {
+        return Err("alpha channel".into());
+    }
+    if s.signal.is_hdr() {
+        return Err("HDR".into());
+    }
+    if !w.is_multiple_of(2) || !h.is_multiple_of(2) {
+        return Err("odd picture size".into());
+    }
+    if s.pixel_aspect.is_some_and(|(n, d)| n != d) {
+        return Err("non-square pixels".into());
+    }
+    let timescale = u32::try_from(rate.num).ok().filter(|n| *n > 0).ok_or("invalid frame rate")?;
+    let frame_duration = u32::try_from(rate.den).ok().filter(|d| *d > 0).ok_or("invalid frame rate")?;
+    Ok(VtConfig {
+        width: w,
+        height: h,
+        timescale,
+        frame_duration,
+        keyframe_interval: 1,
+        profile: VtProfile::ProRes(kind),
+        rate: VtRate::Vbr { target_kbps: 0, max_kbps: 0 },
+    })
+}
+
+/// [`VtEncoder`] for ProRes 422 as a `VideoEncoder`: RGBA pictures in (converted exactly as the
+/// built-in ProRes encoder converts them), MOV samples out.
+pub struct ProResHardware {
+    vt: VtEncoder,
+    kind: ProResKind,
+    signal: filmcraft_export::ColorSignal,
+    y: Vec<u16>,
+    u: Vec<u16>,
+    v: Vec<u16>,
+    decoded: i64,
+}
+
+impl VideoEncoder for ProResHardware {
+    fn sample_entry(&self) -> SampleEntry {
+        let c = self.vt.config();
+        let (w, h) = (c.width.min(u32::from(u16::MAX)) as u16, c.height.min(u32::from(u16::MAX)) as u16);
+        let mut e = SampleEntry::prores(filmcraft_isobmff::FourCc(self.kind.fourcc().to_be_bytes()), w, h);
+        self.signal.apply_to(&mut e, true);
+        e
+    }
+
+    fn timescale(&self) -> u32 {
+        self.vt.config().timescale
+    }
+
+    fn encode(&mut self, f: &EncoderFrame) -> filmcraft_export::Result<Vec<EncodedPacket>> {
+        let c = self.vt.config();
+        if f.hdr.is_some() {
+            return Err(ExportError::Unsupported("hardware encoding does not take HDR pictures".into()));
+        }
+        if (f.width, f.height) != (c.width, c.height) {
+            return Err(ExportError::Encode(format!("picture is {}x{}, the encoder was created for {}x{}", f.width, f.height, c.width, c.height)));
+        }
+        let (w, h) = (f.width as usize, f.height as usize);
+        if f.rgba.len() < w.saturating_mul(h).saturating_mul(4) {
+            return Err(ExportError::Encode("the RGBA picture is smaller than its size".into()));
+        }
+        let cw = w.div_ceil(2);
+        self.y.resize(w * h, 0);
+        self.u.resize(cw * h, 0);
+        self.v.resize(cw * h, 0);
+        let (y, u, v) = (&mut self.y, &mut self.u, &mut self.v);
+        filmcraft_export::timed(filmcraft_export::Stage::Convert, || filmcraft_export::rgba_to_yuv422_10(f.rgba, w, h, y, u, v));
+        let packets = self.vt.encode_422_10(f.index, &self.y, &self.u, &self.v).map_err(ExportError::Encode)?;
+        filmcraft_export::note_hw_encode_frame();
+        self.samples(packets)
+    }
+
+    fn flush(&mut self) -> filmcraft_export::Result<Vec<EncodedPacket>> {
+        let packets = self.vt.flush().map_err(ExportError::Encode)?;
+        self.samples(packets)
+    }
+
+    fn name(&self) -> String {
+        VT_HARDWARE.to_string()
+    }
+
+    fn is_hardware(&self) -> bool {
+        true
+    }
+}
+
+impl ProResHardware {
+    /// Every frame at `n × duration`, a sync sample (ProRes is intra-only).
+    fn samples(&mut self, packets: Vec<VtPacket>) -> filmcraft_export::Result<Vec<EncodedPacket>> {
+        let duration = self.vt.config().frame_duration;
+        let mut out = Vec::with_capacity(packets.len());
+        for p in packets {
+            let n = self.decoded;
+            self.decoded += 1;
+            if n.checked_mul(i64::from(duration)) != Some(p.pts) {
+                return Err(ExportError::Encode(format!("VideoToolbox returned ProRes frame {n} at time {}", p.pts)));
+            }
+            out.push(EncodedPacket { data: p.data, key: true, duration, composition_offset: 0 });
+        }
+        Ok(out)
+    }
+}
+
+/// The ProRes 422 factory: a hardware session when the export allows it and the machine has a
+/// ProRes engine (M1 Pro / Max and later), `None` (the built-in encoder) otherwise.
+pub fn videotoolbox_prores_factory(
+    format: Format,
+    w: u32,
+    h: u32,
+    rate: FrameRate,
+    s: &ExportSettings,
+) -> Option<filmcraft_export::Result<Box<dyn VideoEncoder>>> {
+    if format != Format::ProRes {
+        return None;
+    }
+    let config = match prores_config_for(w, h, rate, s) {
+        Ok(c) => c,
+        Err(why) => {
+            log::info!("hardware ProRes encoding declined: {why}");
+            filmcraft_export::note_hw_encode_declined();
+            return None;
+        }
+    };
+    let VtProfile::ProRes(kind) = config.profile else { return None };
+    match VtEncoder::new(config) {
+        Ok(vt) => {
+            filmcraft_export::note_hw_encode_session();
+            Some(Ok(Box::new(ProResHardware { vt, kind, signal: s.signal, y: Vec::new(), u: Vec::new(), v: Vec::new(), decoded: 0 })))
+        }
+        Err(why) => {
+            log::info!("hardware ProRes encoding declined: {why}");
+            filmcraft_export::note_hw_encode_declined();
+            None
+        }
+    }
+}
+
+static PRORES_PROBE: OnceLock<bool> = OnceLock::new();
+
+/// Whether this machine has a hardware ProRes encoder (asked once, with a small session).
+pub fn prores_available() -> bool {
+    *PRORES_PROBE.get_or_init(|| {
+        let probe = VtConfig {
+            width: 640,
+            height: 360,
+            timescale: 30,
+            frame_duration: 1,
+            keyframe_interval: 1,
+            profile: VtProfile::ProRes(ProResKind::Hq),
+            rate: VtRate::Vbr { target_kbps: 0, max_kbps: 0 },
+        };
+        VtEncoder::new(probe).is_ok()
+    })
+}
+
+/// Which encoder an export would use (Export ▸ Encoder), without creating it.
+pub fn describe(format: Format, w: u32, h: u32, rate: FrameRate, s: &ExportSettings) -> Option<String> {
+    match format {
+        Format::H264 => config_for(w, h, rate, s).ok().map(|_| VT_HARDWARE.to_string()),
+        Format::Hevc => (config_for(w, h, rate, s).is_ok() && hevc_available()).then(|| VT_HARDWARE.to_string()),
+        Format::ProRes => (prores_config_for(w, h, rate, s).is_ok() && prores_available()).then(|| VT_HARDWARE.to_string()),
+        _ => None,
     }
 }

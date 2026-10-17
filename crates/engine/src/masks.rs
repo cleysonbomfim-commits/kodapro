@@ -675,6 +675,8 @@ fn track(s: &mut Session, p: &Value) -> Result<Value> {
             // stopping keeps what was tracked
             Some(e) if e != "stopped" => Err(e.clone()),
             _ => Ok(filmcraft_export::Report {
+                encoder: String::new(),
+                fallback: None,
                 path: String::new(),
                 frames: done,
                 seconds: secs,
