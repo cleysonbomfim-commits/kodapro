@@ -3,6 +3,21 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-17 — Fim da noite: CI completo e resumo
+
+**O que foi feito**
+- `cargo xtask ci` completo, uma vez só no fim, como pedido: **verde** (fmt, clippy, 3.508
+  testes sem falha, layers, assets 72, wasm 50 crates).
+- Resumo da noite para o dono em [`RESUMO_NOITE.md`](RESUMO_NOITE.md): o que ficou pronto, os ΔE,
+  as decisões para revisar, o que deu problema e o que testar no app.
+
+**O que deu problema**
+- Nada no CI. O disco chegou a 20 GB; apaguei executáveis de teste antigos (3,7 GB) antes do CI.
+
+**Próximo passo**
+- O dono revisa as decisões da noite; depois: atalhos da página Cor, glow em várias escalas e
+  calibração das primárias com uma cartela exportada do DaVinci.
+
 ## 2026-10-17 — Marco 5 da aba Cor: a tela da página Cor (noite)
 
 **O que foi feito** (`crates/ui-egui/src/koda/cor.rs` e `cor_paletas.rs`; a prévia antiga saiu)
