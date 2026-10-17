@@ -107,6 +107,8 @@ struct Step {
     ext: Option<std::sync::Arc<str>>,
     /// An external pass's auxiliary image (bound as `aux`).
     ext_aux: Option<std::sync::Arc<filmcraft_render::external::AuxImage>>,
+    /// An external pass that keeps the image it reads for a later combine.
+    save: bool,
 }
 
 fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
@@ -114,7 +116,7 @@ fn step(code: u32, i1: [u32; 4], p: &[f32]) -> Step {
     for (d, s) in q.iter_mut().zip(p) {
         *d = *s;
     }
-    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, ext: None, ext_aux: None }
+    Step { run: false, code, i1, p: q, combine: false, unsharp_blur: false, ext: None, ext_aux: None, save: false }
 }
 
 /// Box passes along x (vertical = false) or y for the radii (radius 0 is a no-op on the CPU).
@@ -132,10 +134,20 @@ fn steps(op: &FxOp) -> Vec<Step> {
     match op {
         FxOp::External { program, .. } => {
             for pass in &program.passes {
-                let mut s = step(0, pass.i1, &pass.p);
-                s.ext = Some(program.wgsl.clone());
-                s.ext_aux = pass.aux.clone();
-                out.push(s);
+                let start = out.len();
+                match pass.blur {
+                    Some(b) => boxes(&[b.radius], b.vertical, true, &mut out),
+                    None => {
+                        let mut s = step(0, pass.i1, &pass.p);
+                        s.ext = Some(program.wgsl.clone());
+                        s.ext_aux = pass.aux.clone();
+                        s.combine = pass.combine;
+                        out.push(s);
+                    }
+                }
+                if let Some(s) = out.get_mut(start) {
+                    s.save = pass.save;
+                }
             }
         }
         FxOp::BrightnessContrast { br, co } => out.push(step(OP_BRIGHTNESS_CONTRAST, [0; 4], &[*br, *co])),
@@ -497,10 +509,11 @@ impl FxStage {
         let mut orig: Option<usize> = None;
         for s in &all {
             // (an Unsharp without blur passes, radius 0, combines the original with itself)
-            if (s.unsharp_blur || s.combine) && orig.is_none() {
+            if (s.unsharp_blur || s.combine || s.save) && orig.is_none() {
                 orig = Some(cur);
             }
-            let keep = if s.unsharp_blur || s.combine { orig } else { None };
+            // the saved image stays untouched until its combine
+            let keep = orig;
             let dst = (0..n).find(|k| *k != cur && Some(*k) != keep)?;
             let ext_aux = match &s.ext_aux {
                 Some(img) => Some(self.aux_view(device, queue, img)?),

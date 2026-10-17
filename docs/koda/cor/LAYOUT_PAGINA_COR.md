@@ -25,6 +25,8 @@ Medidas em % da largura (1915 px) e da altura (1049 px) da janela. Os painéis d
 | Scopes | 35,5–71% | 68–97% | Cabeçalho "Scopes" com seletor de tipo (Parade padrão) e botões de opções; gráfico em fundo preto com escala 0–1023 marcada a cada 128 |
 | Barra de páginas | 0–100% | 97–100% | Nome do app à esquerda; ícones das páginas no centro (Editar, Cor, Motion, Exportar), página atual sublinhada com o acento; Início e Configurações à direita |
 
+**Barra de páginas no app inteiro.** A barra de páginas do rodapé vale para todas as páginas (Editar, Cor, Motion, Exportar), como no DaVinci, e substitui as abas de modo do cabeçalho herdadas do FilmCraft. Cada página tem um ícone próprio (traço fino, visual KODA) com o nome embaixo ao passar o mouse; a página atual fica marcada com o acento verde. Atalhos como no DaVinci: Shift+4 Editar, Shift+6 Cor, Shift+5 Motion, Shift+8 Exportar. Páginas que ainda não existem (Motion) aparecem desativadas.
+
 ## Paleta Primárias (modo barras)
 
 - Cabeçalho: "Primárias – Barras" à esquerda; à direita, botões para alternar entre Barras e Rodas e o reset.

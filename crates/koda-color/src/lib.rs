@@ -14,6 +14,7 @@ pub mod cst;
 pub mod deltae;
 pub mod eval;
 pub mod grade;
+pub mod primaries;
 pub mod store;
 
 use std::sync::Arc;
@@ -39,12 +40,12 @@ fn prepare(e: &filmcraft_project::EffectInstance, cx: &filmcraft_render::effects
         return None;
     }
     let luts = load_luts(&g, cx.project);
-    let passes: Vec<filmcraft_render::external::GpuPass> =
-        eval::gpu_passes(&g, &luts).into_iter().map(|p| filmcraft_render::external::GpuPass { i1: p.i1, p: p.p, aux: p.aux }).collect();
+    let scale = cx.px_scale;
+    let passes = eval::gpu_passes(&g, &luts, scale);
     if passes.is_empty() {
         return None;
     }
-    let cpu = filmcraft_render::external::CpuFx(Arc::new(move |img: &mut filmcraft_render::Image| eval::apply_cpu(&g, &luts, &mut img.px)));
+    let cpu = filmcraft_render::external::CpuFx(Arc::new(move |img: &mut filmcraft_render::Image| eval::apply_cpu(&g, &luts, img, scale)));
     Some(filmcraft_render::external::ExternalOp { cpu, gpu: Some(filmcraft_render::external::GpuProgram { wgsl: shader(), passes }) })
 }
 

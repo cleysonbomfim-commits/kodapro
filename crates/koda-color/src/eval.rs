@@ -14,7 +14,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use filmcraft_color::Lut3d;
-use filmcraft_render::external::AuxImage;
+use filmcraft_render::Image;
+use filmcraft_render::external::{AuxImage, BoxPass, GpuPass};
 
 use crate::grade::{Grade, Interpolation, NodeKind};
 
@@ -66,25 +67,64 @@ enum Ready {
     Gain([f32; 3]),
     Cst(crate::cst::Cst, [[f32; 3]; 3]),
     Lut(Arc<LoadedLut>, f32, Interpolation),
+    Prim(Arc<crate::primaries::Ready>, Arc<AuxImage>),
 }
 
-/// The active nodes of `grade`, ready to run. A LUT node whose LUT is not loaded changes
-/// nothing (on the CPU and the GPU alike).
-fn ready(grade: &Grade, luts: &Luts) -> Vec<Ready> {
+/// A step of the grade: per-pixel nodes (fused on the CPU, one GPU pass each), or a spatial
+/// part of a node that reads neighbouring pixels.
+enum Stage {
+    Pixel(Vec<Ready>),
+    /// Mid Detail of a primaries node: the image against its Gaussian (box radii per axis).
+    MidDetail {
+        amount: f32,
+        radii: Vec<u32>,
+    },
+}
+
+/// Box radii of a Gaussian of `sigma` working-image pixels (the same on the CPU and the GPU).
+fn gauss_radii(sigma: f32) -> Vec<u32> {
+    filmcraft_render::effects::gaussian_boxes(1 << 16, 1 << 16, sigma, sigma).0
+}
+
+/// The active nodes of `grade` as stages, at `px_scale` working pixels per clip pixel. A LUT
+/// node whose LUT is not loaded changes nothing (on the CPU and the GPU alike).
+fn stages(grade: &Grade, luts: &Luts, px_scale: f32) -> Vec<Stage> {
+    let mut out: Vec<Stage> = Vec::new();
     if grade.is_identity() {
-        return Vec::new();
+        return out;
     }
-    grade
-        .active()
-        .filter_map(|n| match &n.kind {
-            NodeKind::Gain { master, rgb } => Some(Ready::Gain(rgb.map(|v| v * master))),
-            NodeKind::Cst(c) => Some(Ready::Cst(*c, c.matrix())),
+    let push = |out: &mut Vec<Stage>, r: Ready| match out.last_mut() {
+        Some(Stage::Pixel(v)) => v.push(r),
+        _ => out.push(Stage::Pixel(vec![r])),
+    };
+    let scale = if px_scale.is_finite() && px_scale > 0.0 { px_scale.min(16.0) } else { 1.0 };
+    for n in grade.active() {
+        match &n.kind {
+            NodeKind::Gain { master, rgb } => push(&mut out, Ready::Gain(rgb.map(|v| v * master))),
+            NodeKind::Cst(c) => push(&mut out, Ready::Cst(*c, c.matrix())),
             NodeKind::Lut { lut, intensity, interpolation } => {
-                (*intensity > 0.0).then_some(())?;
-                luts.get(lut).map(|l| Ready::Lut(l.clone(), *intensity, *interpolation))
+                if *intensity > 0.0
+                    && let Some(l) = luts.get(lut)
+                {
+                    push(&mut out, Ready::Lut(l.clone(), *intensity, *interpolation));
+                }
             }
-        })
-        .collect()
+            NodeKind::Primaries(p) => {
+                if p.mid_detail != 0.0 {
+                    let radii = gauss_radii(crate::primaries::MID_DETAIL_SIGMA * scale);
+                    if !radii.is_empty() {
+                        out.push(Stage::MidDetail { amount: p.mid_detail / 100.0, radii });
+                    }
+                }
+                if !p.pixel_identity() {
+                    let r = p.ready();
+                    let aux = Arc::new(r.aux());
+                    push(&mut out, Ready::Prim(Arc::new(r), aux));
+                }
+            }
+        }
+    }
+    out
 }
 
 #[inline]
@@ -99,36 +139,64 @@ fn run(r: &Ready, c: [f32; 3]) -> [f32; 3] {
             };
             [c[0] + (v[0] - c[0]) * k, c[1] + (v[1] - c[1]) * k, c[2] + (v[2] - c[2]) * k]
         }
+        Ready::Prim(p, _) => p.apply(c),
     }
 }
 
-/// Apply `grade` to one pixel's signal (no premultiplication): the nodes in order.
+/// Apply the per-pixel nodes of `grade` to one pixel's signal (no premultiplication), in order.
+/// Spatial parts (Mid Detail) need the whole picture and are left out here.
 pub fn apply_signal(grade: &Grade, luts: &Luts, c: [f32; 3]) -> [f32; 3] {
-    ready(grade, luts).iter().fold(c, |c, r| run(r, c))
+    stages(grade, luts, 1.0).iter().fold(c, |c, s| match s {
+        Stage::Pixel(v) => v.iter().fold(c, |c, r| run(r, c)),
+        Stage::MidDetail { .. } => c,
+    })
 }
 
-/// Apply `grade` to `px` (linear premultiplied RGBA f32, 4 floats a pixel) on the CPU.
-pub fn apply_cpu(grade: &Grade, luts: &Luts, px: &mut [f32]) {
-    let nodes = ready(grade, luts);
-    if nodes.is_empty() {
-        return;
-    }
+#[inline]
+fn unpremul_signal(p: &[f32]) -> Option<[f32; 3]> {
+    let a = *p.get(3)?;
+    (a > 0.0).then(|| [to_signal(p[0] / a), to_signal(p[1] / a), to_signal(p[2] / a)])
+}
+
+/// Apply `grade` to `img` (linear premultiplied RGBA f32) on the CPU, at `px_scale` working
+/// pixels per clip pixel (spatial parts scale with it).
+pub fn apply_cpu(grade: &Grade, luts: &Luts, img: &mut Image, px_scale: f32) {
     use rayon::prelude::*;
-    px.par_chunks_mut(4 * 1024).for_each(|chunk| {
-        for p in chunk.as_chunks_mut::<4>().0 {
-            let a = p[3];
-            if a <= 0.0 {
-                continue;
-            }
-            let mut c = [to_signal(p[0] / a), to_signal(p[1] / a), to_signal(p[2] / a)];
-            for r in &nodes {
-                c = run(r, c);
-            }
-            for i in 0..3 {
-                p[i] = to_linear(c[i]) * a;
+    for stage in stages(grade, luts, px_scale) {
+        match stage {
+            Stage::Pixel(nodes) => img.px.par_chunks_mut(4 * 1024).for_each(|chunk| {
+                for p in chunk.as_chunks_mut::<4>().0 {
+                    let a = p[3];
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    let mut c = [to_signal(p[0] / a), to_signal(p[1] / a), to_signal(p[2] / a)];
+                    for r in &nodes {
+                        c = run(r, c);
+                    }
+                    for i in 0..3 {
+                        p[i] = to_linear(c[i]) * a;
+                    }
+                }
+            }),
+            Stage::MidDetail { amount, radii } => {
+                let orig = img.clone();
+                filmcraft_render::effects::box_blur(img, &radii, &radii, true);
+                img.px.par_chunks_mut(4).zip(orig.px.par_chunks(4)).for_each(|(p, o)| {
+                    let a = o.get(3).copied().unwrap_or(0.0);
+                    let (Some(oc), Some(bc)) = (unpremul_signal(o), unpremul_signal(p)) else {
+                        p.copy_from_slice(o);
+                        return;
+                    };
+                    let c = crate::primaries::mid_detail(oc, bc, amount);
+                    for i in 0..3 {
+                        p[i] = to_linear(c[i]) * a;
+                    }
+                    p[3] = a;
+                });
             }
         }
-    });
+    }
 }
 
 /// The compute shader the GPU passes run. It declares the bindings of `filmcraft-gpu`'s effect
@@ -142,40 +210,60 @@ pub const WGSL: &str = include_str!("grade.wgsl");
 pub const NODE_GAIN: u32 = 1;
 pub const NODE_CST: u32 = 2;
 pub const NODE_LUT: u32 = 3;
+pub const NODE_PRIMARIES: u32 = 4;
+pub const NODE_MID_DETAIL: u32 = 5;
 
-/// One GPU pass: integer parameters (`u.i1`), up to 24 floats (`u.p0`…`u.p5`) and an optional
-/// auxiliary image (a LUT).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Pass {
-    pub i1: [u32; 4],
-    pub p: [f32; 24],
-    pub aux: Option<Arc<AuxImage>>,
+/// The GPU passes for `grade` at `px_scale` (none when it changes nothing).
+pub fn gpu_passes(grade: &Grade, luts: &Luts, px_scale: f32) -> Vec<GpuPass> {
+    let mut out = Vec::new();
+    for stage in stages(grade, luts, px_scale) {
+        match stage {
+            Stage::Pixel(nodes) => out.extend(nodes.into_iter().map(pixel_pass)),
+            Stage::MidDetail { amount, radii } => {
+                blur_passes(&radii, &mut out);
+                let mut p = [0.0; 24];
+                p[0] = amount;
+                out.push(GpuPass { i1: [NODE_MID_DETAIL, 0, 0, 0], p, combine: true, ..Default::default() });
+            }
+        }
+    }
+    out
 }
 
-/// The GPU passes for `grade`: one per active node (none when it changes nothing).
-pub fn gpu_passes(grade: &Grade, luts: &Luts) -> Vec<Pass> {
-    ready(grade, luts)
-        .into_iter()
-        .map(|r| match r {
-            Ready::Gain(g) => {
-                let mut p = [0.0; 24];
-                p[..3].copy_from_slice(&g);
-                Pass { i1: [NODE_GAIN, 0, 0, 0], p, aux: None }
-            }
-            Ready::Cst(c, _) => {
-                let (i1, p) = c.gpu();
-                Pass { i1, p, aux: None }
-            }
-            Ready::Lut(l, k, interp) => {
-                let mut p = [0.0; 24];
-                p[0] = k;
-                p[4..7].copy_from_slice(&l.cube.domain_min);
-                p[8..11].copy_from_slice(&l.cube.domain_max);
-                let tet = u32::from(interp == Interpolation::Tetrahedral);
-                Pass { i1: [NODE_LUT, tet, l.cube.size as u32, 0], p, aux: Some(l.aux.clone()) }
-            }
-        })
-        .collect()
+/// Box passes along rows then columns; the first keeps the image it reads (for the combine).
+fn blur_passes(radii: &[u32], out: &mut Vec<GpuPass>) {
+    let first = out.len();
+    for vertical in [false, true] {
+        for &radius in radii.iter().filter(|r| **r > 0) {
+            out.push(GpuPass { blur: Some(BoxPass { radius, vertical }), ..Default::default() });
+        }
+    }
+    if let Some(p) = out.get_mut(first) {
+        p.save = true;
+    }
+}
+
+fn pixel_pass(r: Ready) -> GpuPass {
+    match r {
+        Ready::Gain(g) => {
+            let mut p = [0.0; 24];
+            p[..3].copy_from_slice(&g);
+            GpuPass { i1: [NODE_GAIN, 0, 0, 0], p, ..Default::default() }
+        }
+        Ready::Cst(c, _) => {
+            let (i1, p) = c.gpu();
+            GpuPass { i1, p, ..Default::default() }
+        }
+        Ready::Lut(l, k, interp) => {
+            let mut p = [0.0; 24];
+            p[0] = k;
+            p[4..7].copy_from_slice(&l.cube.domain_min);
+            p[8..11].copy_from_slice(&l.cube.domain_max);
+            let tet = u32::from(interp == Interpolation::Tetrahedral);
+            GpuPass { i1: [NODE_LUT, tet, l.cube.size as u32, 0], p, aux: Some(l.aux.clone()), ..Default::default() }
+        }
+        Ready::Prim(r, aux) => GpuPass { i1: [NODE_PRIMARIES, r.table.len() as u32, 0, 0], p: [0.0; 24], aux: Some(aux), ..Default::default() },
+    }
 }
 
 #[cfg(test)]
@@ -199,8 +287,9 @@ mod tests {
         let mut g = Grade::default();
         g.add(NodeKind::Gain { master: 2.0, rgb: [1.0, 0.5, 1.0] }, None, None).unwrap();
         // half-transparent mid grey, premultiplied; an over-white pixel; a negative one
-        let mut px = vec![0.09, 0.09, 0.09, 0.5, 2.0, 2.0, 2.0, 1.0, -0.1, 0.2, 0.0, 1.0];
-        apply_cpu(&g, &Luts::new(), &mut px);
+        let mut img = Image { w: 3, h: 1, px: vec![0.09, 0.09, 0.09, 0.5, 2.0, 2.0, 2.0, 1.0, -0.1, 0.2, 0.0, 1.0] };
+        apply_cpu(&g, &Luts::new(), &mut img, 1.0);
+        let px = &img.px;
         let s = to_signal(0.18);
         let want = [to_linear(s * 2.0) * 0.5, to_linear(s) * 0.5, to_linear(s * 2.0) * 0.5, 0.5];
         for (a, b) in px[..4].iter().zip(want) {
@@ -209,22 +298,22 @@ mod tests {
         assert!(px[4] > 2.0, "over-white values are not clipped: {px:?}");
         assert!(px[8] < -0.1, "negative values are not clipped: {px:?}");
         // a disabled node, a bypassed grade: unchanged
-        let before = px.clone();
+        let before = img.px.clone();
         let id = g.nodes[0].id;
         g.node_mut(id).unwrap().enabled = false;
-        apply_cpu(&g, &Luts::new(), &mut px);
-        assert_eq!(px, before);
-        assert!(gpu_passes(&g, &Luts::new()).is_empty());
+        apply_cpu(&g, &Luts::new(), &mut img, 1.0);
+        assert_eq!(img.px, before);
+        assert!(gpu_passes(&g, &Luts::new(), 1.0).is_empty());
     }
 
     #[test]
     fn transparent_pixels_stay_untouched() {
         let mut g = Grade::default();
         g.add(NodeKind::Gain { master: 3.0, rgb: [1.0; 3] }, None, None).unwrap();
-        let mut px = vec![0.0, 0.0, 0.0, 0.0];
-        apply_cpu(&g, &Luts::new(), &mut px);
-        assert_eq!(px, [0.0; 4]);
-        assert_eq!(gpu_passes(&g, &Luts::new()).len(), 1);
+        let mut img = Image { w: 1, h: 1, px: vec![0.0, 0.0, 0.0, 0.0] };
+        apply_cpu(&g, &Luts::new(), &mut img, 1.0);
+        assert_eq!(img.px, [0.0; 4]);
+        assert_eq!(gpu_passes(&g, &Luts::new(), 1.0).len(), 1);
     }
 
     fn lut(size: usize, f: impl Fn([f32; 3]) -> [f32; 3]) -> Arc<LoadedLut> {
@@ -251,8 +340,8 @@ mod tests {
         }
         // a reference the project does not have: the node changes nothing, on both paths
         assert_eq!(apply_signal(&g, &Luts::new(), c), c);
-        assert!(gpu_passes(&g, &Luts::new()).is_empty());
-        let passes = gpu_passes(&g, &luts);
+        assert!(gpu_passes(&g, &Luts::new(), 1.0).is_empty());
+        let passes = gpu_passes(&g, &luts, 1.0);
         assert_eq!(passes.len(), 1);
         let aux = passes[0].aux.as_ref().expect("the LUT image");
         assert_eq!((aux.w, aux.h, aux.rgba.len()), (17 * 17, 17, 17 * 17 * 17 * 4));

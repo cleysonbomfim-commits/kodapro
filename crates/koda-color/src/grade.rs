@@ -68,6 +68,9 @@ pub enum NodeKind {
         #[serde(default)]
         interpolation: Interpolation,
     },
+    /// Primaries (Lift / Gamma / Gain / Offset, Temp, Tint, Contrast…) and custom curves, like
+    /// a DaVinci corrector node.
+    Primaries(Box<crate::primaries::Primaries>),
 }
 
 /// How a LUT is sampled between its grid points. DaVinci's default (and the KODA powergrade's
@@ -97,6 +100,7 @@ impl NodeKind {
             "gain" => Some(NodeKind::Gain { master: 1.0, rgb: [1.0; 3] }),
             "cst" => Some(NodeKind::Cst(crate::cst::Cst::default())),
             "lut" => Some(NodeKind::Lut { lut: String::new(), intensity: 1.0, interpolation: Interpolation::Trilinear }),
+            "primaries" => Some(NodeKind::Primaries(Box::default())),
             _ => None,
         }
     }
@@ -107,6 +111,7 @@ impl NodeKind {
             NodeKind::Gain { .. } => "gain",
             NodeKind::Cst(_) => "cst",
             NodeKind::Lut { .. } => "lut",
+            NodeKind::Primaries(_) => "primaries",
         }
     }
 
@@ -116,6 +121,7 @@ impl NodeKind {
             NodeKind::Gain { .. } => "Ganho",
             NodeKind::Cst(_) => "CST",
             NodeKind::Lut { .. } => "LUT",
+            NodeKind::Primaries(_) => "Primárias",
         }
     }
 
@@ -164,6 +170,7 @@ impl NodeKind {
                 }
                 other => return Err(format!("lut node has no parameter \"{other}\" (lut, intensity, interpolation)")),
             },
+            NodeKind::Primaries(p) => p.set_param(name, value)?,
         }
         Ok(())
     }
@@ -178,6 +185,7 @@ impl NodeKind {
                 intensity: if intensity.is_finite() { intensity.clamp(0.0, 1.0) } else { 1.0 },
                 interpolation: *interpolation,
             },
+            NodeKind::Primaries(p) => NodeKind::Primaries(Box::new(p.sanitized())),
         }
     }
 }
@@ -328,6 +336,7 @@ impl Grade {
             NodeKind::Gain { master, rgb } => *master == 1.0 && *rgb == [1.0; 3],
             NodeKind::Cst(_) => false,
             NodeKind::Lut { lut, intensity, .. } => lut.is_empty() || *intensity <= 0.0,
+            NodeKind::Primaries(p) => p.is_identity(),
         })
     }
 }

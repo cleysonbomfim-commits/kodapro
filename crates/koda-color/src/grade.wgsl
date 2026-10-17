@@ -23,6 +23,10 @@ struct U {
 const NODE_GAIN: u32 = 1u;
 const NODE_CST: u32 = 2u;
 const NODE_LUT: u32 = 3u;
+const NODE_PRIMARIES: u32 = 4u;
+const NODE_MID_DETAIL: u32 = 5u;
+
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
 const LN10: f32 = 2.302585092994046;
 const SLOG3_BREAK: f32 = 171.2102946929;
@@ -190,6 +194,68 @@ fn lut(c: vec3<f32>) -> vec3<f32> {
     return c + (v - c) * u.p0.x;
 }
 
+// Primaries node parameter `i` (koda_color::primaries::Ready::p, row 0 of aux, 4 per texel).
+fn pp(i: i32) -> f32 {
+    let t = textureLoad(aux, vec2<i32>(i / 4, 0), 0);
+    return t[i % 4];
+}
+
+// Curve `c` (0 = Y, 1..3 = R, G, B) at x: the baked table (row 1), linear in between, extended
+// past [0, 1] with the end slopes.
+fn pcurve(c: i32, x: f32) -> f32 {
+    let n = i32(u.i1.y);
+    if x <= 0.0 {
+        return textureLoad(aux, vec2<i32>(0, 1), 0)[c] + pp(28 + c) * x;
+    }
+    if x >= 1.0 {
+        return textureLoad(aux, vec2<i32>(n - 1, 1), 0)[c] + pp(32 + c) * (x - 1.0);
+    }
+    let f = x * f32(n - 1);
+    let i = min(i32(f), n - 2);
+    let t = f - f32(i);
+    let a = textureLoad(aux, vec2<i32>(i, 1), 0)[c];
+    let b = textureLoad(aux, vec2<i32>(i + 1, 1), 0)[c];
+    return a + (b - a) * t;
+}
+
+fn lgg(x: f32, k: i32) -> f32 {
+    return spow((x + pp(4 + k) * (1.0 - x)) * pp(8 + k), pp(12 + k));
+}
+
+fn smoothw(a: f32, b: f32, x: f32) -> f32 {
+    let t = clamp((x - a) / (b - a), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+// Primaries and curves (koda_color::primaries::Ready::apply).
+fn prim(c0: vec3<f32>) -> vec3<f32> {
+    var c = c0 * vec3<f32>(pp(0), pp(1), pp(2));
+    c = vec3<f32>(lgg(c.r, 1), lgg(c.g, 2), lgg(c.b, 3));
+    let y0 = dot(c, LUMA);
+    let dy = lgg(y0, 0) - y0;
+    let m = pp(3);
+    c = vec3<f32>(lgg(c.r, 0), lgg(c.g, 0), lgg(c.b, 0)) * (1.0 - m) + (c + vec3<f32>(dy)) * m;
+    c = c + vec3<f32>(pp(16), pp(17), pp(18));
+    c = (c - vec3<f32>(pp(20))) * pp(19) + vec3<f32>(pp(20));
+    let y1 = dot(c, LUMA);
+    c = c + vec3<f32>(pp(21) * (1.0 - smoothw(0.0, 0.6, y1)) + pp(22) * smoothw(0.4, 1.0, y1));
+    let y = dot(c, LUMA);
+    let cb0 = (c.b - y) / 1.8556;
+    let cr0 = (c.r - y) / 1.5748;
+    let chroma = sqrt(cb0 * cb0 + cr0 * cr0);
+    let k = pp(24) * (1.0 + pp(23) * (1.0 - min(chroma * 4.0, 1.0)));
+    let cb = (cb0 * pp(25) - cr0 * pp(26)) * k;
+    let cr = (cb0 * pp(26) + cr0 * pp(25)) * k;
+    let r = y + 1.5748 * cr;
+    let b = y + 1.8556 * cb;
+    let g = (y - LUMA.r * r - LUMA.b * b) / LUMA.g;
+    c = vec3<f32>(r, g, b);
+    if pp(27) > 0.5 {
+        c = vec3<f32>(pcurve(1, pcurve(0, c.r)), pcurve(2, pcurve(0, c.g)), pcurve(3, pcurve(0, c.b)));
+    }
+    return c;
+}
+
 fn node(c: vec3<f32>) -> vec3<f32> {
     switch u.i1.x {
         case NODE_GAIN: {
@@ -201,10 +267,34 @@ fn node(c: vec3<f32>) -> vec3<f32> {
         case NODE_LUT: {
             return lut(c);
         }
+        case NODE_PRIMARIES: {
+            return prim(c);
+        }
         default: {
             return c;
         }
     }
+}
+
+fn unpremul_signal(px: vec4<f32>) -> vec3<f32> {
+    return vec3<f32>(to_signal1(px.r / px.a), to_signal1(px.g / px.a), to_signal1(px.b / px.a));
+}
+
+// Mid Detail combine (koda_color::primaries::mid_detail): `src` holds the Gaussian, `aux` the
+// image before it.
+fn mid_detail(p: vec2<i32>) -> vec4<f32> {
+    let o = textureLoad(aux, p, 0);
+    let bl = textureLoad(src, p, 0);
+    if o.a <= 0.0 || bl.a <= 0.0 {
+        return o;
+    }
+    let oc = unpremul_signal(o);
+    let yo = dot(oc, LUMA);
+    let yb = dot(unpremul_signal(bl), LUMA);
+    let w = clamp(4.0 * yo * (1.0 - yo), 0.0, 1.0);
+    let d = (yo - yb) * u.p0.x * 1.5 * w;
+    let c = oc + vec3<f32>(d);
+    return vec4<f32>(to_linear1(c.r) * o.a, to_linear1(c.g) * o.a, to_linear1(c.b) * o.a, o.a);
 }
 
 @compute @workgroup_size(16, 16)
@@ -213,6 +303,10 @@ fn ext_px(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let p = vec2<i32>(id.xy);
+    if u.i1.x == NODE_MID_DETAIL {
+        textureStore(dst, p, mid_detail(p));
+        return;
+    }
     let px = textureLoad(src, p, 0);
     let a = px.a;
     if a <= 0.0 {

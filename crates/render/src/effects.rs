@@ -809,7 +809,7 @@ pub fn gaussian(img: &mut Image, sigma_x: f32, sigma_y: f32, repeat_edge: bool) 
 }
 
 /// The box radii [`gaussian`] runs on a `w`×`h` image, per axis (empty: that axis is untouched).
-pub(crate) fn gaussian_boxes(w: usize, h: usize, sigma_x: f32, sigma_y: f32) -> (Vec<u32>, Vec<u32>) {
+pub fn gaussian_boxes(w: usize, h: usize, sigma_x: f32, sigma_y: f32) -> (Vec<u32>, Vec<u32>) {
     // beyond a few image sizes every radius gives the same (flat) result; cap to keep box sizes sane
     let sigma_x = if sigma_x.is_finite() { sigma_x.min(w.max(8) as f32 * 2.0) } else { 0.0 };
     let sigma_y = if sigma_y.is_finite() { sigma_y.min(h.max(8) as f32 * 2.0) } else { 0.0 };
@@ -818,7 +818,7 @@ pub(crate) fn gaussian_boxes(w: usize, h: usize, sigma_x: f32, sigma_y: f32) -> 
 }
 
 /// Box passes of radii `rx` along rows, then `ry` along columns.
-pub(crate) fn box_blur(img: &mut Image, rx: &[u32], ry: &[u32], repeat_edge: bool) {
+pub fn box_blur(img: &mut Image, rx: &[u32], ry: &[u32], repeat_edge: bool) {
     for r in rx {
         box_rows(&mut img.px, img.w, *r as usize, repeat_edge);
     }

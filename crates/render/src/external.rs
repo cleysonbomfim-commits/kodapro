@@ -30,11 +30,26 @@ pub struct AuxImage {
 
 /// One GPU pass: integer (`u.i1`) and float (`u.p0`…`u.p5`) parameters, and an optional
 /// auxiliary image (shared: the GPU stage uploads each one once).
-#[derive(Clone, Debug, PartialEq)]
+///
+/// Spatial effects (blur-based: sharpening, glow, local contrast) chain passes: `save` keeps the
+/// image this pass reads; `blur` passes are the effect stage's own box blur (edge-repeating, the
+/// same as [`crate::effects::box_blur`] on the CPU) instead of the shader; a `combine` pass binds
+/// the saved image as `aux` (in place of [`GpuPass::aux`]) and forgets it.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GpuPass {
     pub i1: [u32; 4],
     pub p: [f32; 24],
     pub aux: Option<Arc<AuxImage>>,
+    pub save: bool,
+    pub blur: Option<BoxPass>,
+    pub combine: bool,
+}
+
+/// A box blur pass of `radius` pixels along rows (`vertical == false`) or columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoxPass {
+    pub radius: u32,
+    pub vertical: bool,
 }
 
 /// An effect's GPU program: its shader and the passes to run (none: the effect changes nothing).

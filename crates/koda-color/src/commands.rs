@@ -38,7 +38,7 @@ pub fn commands() -> Vec<CommandSpec> {
             run: inspect,
             journal: false,
         },
-        cmd("koda.color.addNode", "Add Color Node", r#"{"clip":clipId?,"type":"gain"|"cst"|"lut","name":str?,"index":int?}"#, add_node),
+        cmd("koda.color.addNode", "Add Color Node", r#"{"clip":clipId?,"type":"gain"|"cst"|"lut"|"primaries","name":str?,"index":int?}"#, add_node),
         cmd("koda.color.removeNode", "Delete Color Node", r#"{"clip":clipId?,"node":nodeId}"#, remove_node),
         cmd("koda.color.moveNode", "Move Color Node", r#"{"clip":clipId?,"node":nodeId,"index":int}"#, move_node),
         cmd("koda.color.renameNode", "Rename Color Node", r#"{"clip":clipId?,"node":nodeId,"name":str}"#, rename_node),
@@ -46,6 +46,13 @@ pub fn commands() -> Vec<CommandSpec> {
         cmd("koda.color.setParam", "Set Color Node Parameter", r#"{"clip":clipId?,"node":nodeId,"param":str,"value":number|[number]|str}"#, set_param),
         cmd("koda.color.setBypass", "Bypass Color Grade", r#"{"clip":clipId?,"bypass":bool?}"#, set_bypass),
         cmd("koda.color.setGrade", "Set Color Grade", r#"{"clip":clipId?,"grade":object}"#, set_grade_cmd),
+        cmd("koda.color.setCurve", "Set Color Curve", r#"{"clip":clipId?,"node":nodeId,"channel":"y"|"r"|"g"|"b","points":[[x,y]]}"#, set_curve),
+        cmd(
+            "koda.color.resetParams",
+            "Reset Color Node",
+            r#"{"clip":clipId?,"node":nodeId,"what":"all"|"lift"|"gamma"|"gain"|"offset"|"curves"|"curve.y"?}"#,
+            reset_params,
+        ),
         cmd("koda.color.loadLut", "Load LUT into Color Node", r#"{"clip":clipId?,"node":nodeId,"path":str}"#, load_lut),
     ]
 }
@@ -102,7 +109,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn add_node(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "koda.color.addNode";
     let t = p.get("type").and_then(Value::as_str).unwrap_or("gain");
-    let kind = NodeKind::from_type(t).ok_or_else(|| bad(CMD, format!("unknown node type \"{t}\" (gain, cst, lut)")))?;
+    let kind = NodeKind::from_type(t).ok_or_else(|| bad(CMD, format!("unknown node type \"{t}\" (gain, cst, lut, primaries)")))?;
     let name = match p.get("name") {
         None => None,
         Some(v) => Some(v.as_str().ok_or_else(|| bad(CMD, "name: expected text"))?.to_string()),
@@ -208,4 +215,47 @@ fn load_lut(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(json!({ "node": n }))
     })?;
     Ok(json!({ "node": n, "lut": reference }))
+}
+
+/// The primaries node `n` of `g`, for changes.
+fn primaries_mut(g: &mut Grade, n: u32) -> std::result::Result<&mut crate::primaries::Primaries, String> {
+    match &mut g.node_mut(n)?.kind {
+        NodeKind::Primaries(p) => Ok(p),
+        _ => Err(format!("node {n} is not a primaries node")),
+    }
+}
+
+/// Replace one custom curve's points (linked R / G / B move together).
+fn set_curve(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.setCurve";
+    let n = node_id(CMD, p)?;
+    let ch = p.get("channel").and_then(Value::as_str).ok_or_else(|| bad(CMD, "channel: expected y, r, g or b"))?.to_string();
+    let pts = p.get("points").and_then(Value::as_array).ok_or_else(|| bad(CMD, "points: expected [[x, y], …]"))?;
+    if pts.len() > crate::primaries::range::CURVE_POINTS * 4 {
+        return Err(bad(CMD, "points: too many"));
+    }
+    let mut v = Vec::with_capacity(pts.len());
+    for q in pts {
+        let xy = q.as_array().filter(|a| a.len() == 2).and_then(|a| Some([a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32]));
+        v.push(xy.ok_or_else(|| bad(CMD, "points: each point is [x, y] with numbers"))?);
+    }
+    edit_grade(s, CMD, "Set Color Curve", p, move |g| {
+        let prim = primaries_mut(g, n)?;
+        prim.curves.set(&ch, crate::primaries::CurvePoints(v))?;
+        Ok(json!({ "node": n }))
+    })
+}
+
+/// Reset a primaries node's controls (or one group, or a curve) to DaVinci's defaults.
+fn reset_params(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.resetParams";
+    let n = node_id(CMD, p)?;
+    let what = match p.get("what") {
+        None => "all".to_string(),
+        Some(v) => v.as_str().ok_or_else(|| bad(CMD, "what: expected text"))?.to_string(),
+    };
+    edit_grade(s, CMD, "Reset Color Node", p, move |g| {
+        primaries_mut(g, n)?.reset(&what)?;
+        Ok(json!({ "node": n }))
+    })
 }

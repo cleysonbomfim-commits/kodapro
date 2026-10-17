@@ -3,6 +3,62 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-16 — Marco 3 da aba Cor: primárias e curvas (noite, trabalho sozinho)
+
+**O que foi feito**
+- **Nó de primárias** (`crates/koda-color/src/primaries.rs`, tipo `primaries`): Lift/Gamma/Gain
+  (Y, R, G, B) e Offset (R, G, B) — os mesmos números em barras e rodas, como no DaVinci —, Temp,
+  Tint, Contraste, Pivot, Mid Detail, Color Boost, Shadows, Highlights, Saturação, Hue e Lum Mix,
+  com os padrões e faixas do DaVinci (Gain 1, Offset 25, Pivot 0,435, Sat/Hue 50, Lum Mix 100).
+- **Curvas Y/R/G/B** no mesmo nó: pontos editáveis, spline monotônica (não "dá a volta"),
+  ligação R/G/B (padrão ligada) e reset. A curva vira tabela de 1024 amostras.
+- **GPU**: tudo no `grade.wgsl`; parâmetros e curvas vão numa imagem auxiliar (a CPU lê os mesmos
+  números, por isso as duas batem). **Mid Detail** é espacial: o gancho do FilmCraft ganhou passes de
+  desfoque e "combine" para efeitos externos (`GpuPass { save, blur, combine }`, usando o box blur
+  do próprio FilmCraft na GPU e na CPU). Isso também serve para a nitidez e o glow do marco 4.
+- Comandos novos: `koda.color.setCurve {node, channel, points}` e
+  `koda.color.resetParams {node, what}`; `addNode` aceita `primaries`; `setParam` aceita
+  `lift`, `lift.y`, `offset.r`, `temp`, `midDetail`, `curvesLinked`, `mode`… Tudo com desfazer.
+- **Achado:** o print `davinci-color-referencia.png` mostra os valores do nó 01 (Temp −69,9,
+  Tint −5,78, Shadows 17,5, o resto no padrão). Com isso calibrei Temp/Tint contra 00_log → 01_global
+  (`examples/calibra_primarias.rs`): no sinal log, Temp −69,9 = R ×0,975 e B ×1,0225 contra o G.
+- Print público: `docs/koda/cor/prints/marco3-carta.png` (cartela sintética pelo CST: sem
+  primárias | nó 01 | primárias criativas | curvas). Comparação local (fora do git):
+  `referencia/comparacoes/primarias_00_vs_01.png`. **App atualizado.**
+
+**O que funcionou — números**
+- Nó 01 (Temp, Tint e Shadows do print + curva Y ajustada) × 01_global do DaVinci: **ΔE 2000
+  médio 0,68, p99 1,67, máximo 2,12** — dentro da meta (média < 1, máximo < 3). Só a curva, sem
+  Temp/Tint/Shadows: média 2,86 (então Temp/Tint fazem diferença real).
+- GPU × CPU no compositor (7 casos: LGG, offset/contraste/pivot, temp/tint/lum mix,
+  shadows/highlights/boost/sat/hue, curvas, mid detail, mid detail + nó 01; cheio e 1/2):
+  diferença média ≤ 0,05 de 255, p99 1.
+- Testes: 20 unitários do koda-color + marcos 1, 2 e 3; filmcraft-gpu e filmcraft-render (242)
+  passaram com a mudança do gancho.
+
+**Decisões para revisar**
+- A **curva do nó 01** não aparece no print: ajustei uma curva Y de 9 pontos ao resultado do
+  DaVinci. Os pontos abaixo de 0,3 e acima de 0,75 do sinal não têm pixel no frame e ficaram
+  "soltos" (`primaries::koda_global`). Se você me mandar um print da aba Curves do nó 01, eu troco.
+- Fórmulas sem conferência no DaVinci (escolhi as usuais de correção de cor): Lift
+  `x + L(1−x)`, Gain `×G`, Gamma como potência `2^(−γ)`, Offset `(valor−25)/100`, Contraste
+  linear em torno do Pivot (o DaVinci pode estar usando a opção "S-curve"), Shadows/Highlights
+  como deslocamento de luma com transições suaves (até ±0,25 em ±100), Color Boost como vibrance,
+  Hue girando ±180°, Mid Detail com sigma 12 px e aplicado antes das primárias. Temp/Tint em forma
+  exponencial (calibrada num ponto só: −69,9).
+- Ordem dentro do nó: Mid Detail → Temp/Tint → LGG por canal → Y com Lum Mix → Offset →
+  Contraste → Shadows/Highlights → Boost/Sat/Hue → curva Y → curvas R/G/B.
+- Curva Y aplicada por canal (como "master"); "ligada" move R, G e B juntos e deixa o Y separado.
+- Para calibrar o resto, o ideal é exportar do DaVinci uma cartela com um controle de cada vez.
+
+**O que deu problema**
+- `smooth` é palavra reservada em WGSL: o shader não compilava na GPU; renomeado.
+- O disco estava em 20 GB; apaguei 166 executáveis de teste antigos em `target/release/deps`
+  (4,5 GB) e ficou em 24 GB.
+
+**Próximo passo**
+- Marco 4: nó de nitidez e glow, calibrados em 02_cst → 03_nitidez → 04_glow.
+
 ## 2026-10-16 — Barra de páginas no rodapé, como no DaVinci
 
 **O que foi feito**
