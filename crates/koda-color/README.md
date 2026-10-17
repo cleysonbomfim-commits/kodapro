@@ -11,8 +11,11 @@ Grades de cor por clipe, feitas de nós em série, no estilo do DaVinci Resolve.
 | `store` | A grade fica no clipe como efeito oculto `koda_grade`, com o JSON da grade em texto legível no `.fcproj`. Sem definição de efeito: não aparece no painel de efeitos, não é copiada por Colar Atributos e não pode ser removida, ligada/desligada ou resetada pelos comandos `effects.*`. |
 | `eval` | Referência na CPU (`apply_cpu`) e passes da GPU (`gpu_passes` + `grade.wgsl`; a LUT vai como imagem 2D auxiliar). Os nós trabalham no sinal: o inverso da decodificação Rec.709 do FilmCraft, então um clipe da FX30 na interpretação padrão chega aos nós com os próprios códigos S-Log3. |
 | `cst` | Matemática do nó CST (curvas, matriz, curva fílmica, compressão de gamut). |
+| `primaries` | Nó de primárias e curvas (marco 3): fórmulas, curvas monotônicas, bloco de parâmetros e tabela de curvas que a CPU e a GPU leem iguais; `koda_global()` = nó 01 do powergrade. |
+| `spatial` | Nós de nitidez e glow (marco 4). |
+| `library` | Powergrades em arquivo (`*.kpg`, com as LUTs embutidas) e a área de cópia de grade/nó (marco 6). |
 | `deltae` | ΔE 2000 (CIEDE2000) entre imagens Rec.709 / Gamma 2.4, para comparar com o DaVinci. |
-| `commands` | `koda.color.inspect`, `addNode`, `removeNode`, `moveNode`, `renameNode`, `setNodeEnabled`, `setParam`, `setBypass`, `setGrade`. Cada edição é um passo de desfazer; alvo = `clip` ou o clipe selecionado. |
+| `commands` | `koda.color.inspect`, `addNode`, `removeNode`, `moveNode`, `renameNode`, `setNodeEnabled`, `setParam`, `setBypass`, `setGrade`, `loadLut`, `setCurve`, `resetParams`, `copyGrade`, `pasteGrade`, `applyGradeFrom`, `copyNode`, `pasteNode`, `savePowergrade`, `applyPowergrade`, `listPowergrades`. Cada edição é um passo de desfazer; alvo = `clip` (ou `clips`) ou o(s) clipe(s) selecionado(s). |
 
 Nós:
 
@@ -20,6 +23,9 @@ Nós:
 |---|---|---|
 | `gain` | `master`, `rgb` (0 a 16) | Marco 1. |
 | `cst` | `inputGamut`, `inputCurve`, `outputGamut`, `outputCurve`, `toneMapping` (`none` / `filmic`), `white`, `mid`, `contrast`, `gamutMapping` (`none` / `compress`) | Marco 2. Padrão = CST do powergrade KODA: S-Gamut3.Cine / S-Log3 → Rec.709 / Gamma 2.4 com a curva fílmica por canal. Curva S-Log3 e primárias do `filmcraft-color` (documentos da Sony). |
+| `primaries` | `lift`, `gamma`, `gain` (`[y, r, g, b]` ou `lift.y`…), `offset` (`[r, g, b]`), `temp`, `tint`, `contrast`, `pivot`, `midDetail`, `colorBoost`, `shadows`, `highlights`, `sat`, `hue`, `lumMix`, `mode` (`bars` / `wheels`), `curvesLinked`; curvas por `koda.color.setCurve {channel, points}` | Marco 3. Padrões e faixas do DaVinci. Temp/Tint calibrados contra o nó 01 (ΔE 0,68). Mid Detail é espacial. |
+| `sharpen` | `amount`, `radius` (sigma em px do clipe) | Marco 4. Padrão = nó 03 do KODA (ΔE 0,14). |
+| `glow` | `style` (`softLight` / `screen` / `add` / `normal`), `threshold`, `spread`, `gain`, `saturation`, `gamma`, `core`, `opacity`, `highlightRecovery` | Marco 4. Padrão = nó 04 do KODA (ΔE 0,81). |
 | `lut` | `lut` (`lib:<id>` da biblioteca de LUTs do projeto), `intensity` (0 a 1), `interpolation` (`trilinear` / `tetrahedral`) | Marco 2. `koda.color.loadLut {node, path}` importa o arquivo (`lut.import`) e liga ao nó. LUTs 1D ou com shaper viram um cubo 33³. |
 
 ### Calibração contra o DaVinci (marco 2)
@@ -31,6 +37,12 @@ contrast 1,86. Medido: por canal ΔE 0,68 contra 1,40 na luminância; gamut comp
 (0,713 contra 0,706), por isso desligado no padrão. A LUT do nó 05 bate melhor com interpolação
 trilinear (ΔE 0,091) que tetraédrica (0,095). Ferramentas: `examples/calibra_cst.rs`,
 `examples/calibra_lut.rs`, `examples/imagens_marco2.rs` (precisam de `docs/koda/cor/referencia/`).
+
+### Efeitos espaciais na GPU
+
+Mid Detail, nitidez e glow leem pixels vizinhos. O gancho `filmcraft_render::external::GpuPass`
+tem `save` (guarda a imagem que o passe lê), `blur` (box blur do próprio FilmCraft, igual na CPU)
+e `combine` (o passe recebe a imagem guardada em `aux`).
 
 ## Como se liga ao FilmCraft
 

@@ -3,6 +3,42 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-17 — Marco 6 da aba Cor, só o motor: powergrades e copiar/colar (noite)
+
+**O que foi feito** (`crates/koda-color/src/library.rs` e comandos novos em `commands.rs`)
+- **Powergrades em arquivo** (`*.kpg`, JSON legível): a grade inteira com **as LUTs embutidas**,
+  para funcionar em qualquer projeto. Ao aplicar, as LUTs entram na biblioteca de LUTs do projeto
+  (uma LUT igual já existente é reaproveitada, não duplicada) e os nós passam a apontar para elas.
+  - `koda.color.savePowergrade {clip?, name, path?}` (sem `path`: pasta padrão
+    `~/Library/Application Support/FilmCraft/koda/powergrades/<nome>.kpg`)
+  - `koda.color.applyPowergrade {path, clip?/clips?, mode: replace|append}`
+  - `koda.color.listPowergrades {dir?}` (arquivos quebrados aparecem com o erro)
+- **Copiar a grade de um clipe para outros**: `koda.color.copyGrade {clip?}` +
+  `koda.color.pasteGrade {clips?, mode?}` (sem `clips`: os clipes selecionados), e
+  `koda.color.applyGradeFrom {from, clips?}` (direto, como o clique do meio no DaVinci).
+- **Copiar e colar um nó**: `koda.color.copyNode {clip?, node}` + `koda.color.pasteNode
+  {clip?, index?}` (nó novo) ou `{replace: nó}` (troca só os ajustes do nó, mantém id, nome e
+  liga/desliga — como "colar atributos" do DaVinci).
+- Cada colagem/aplicação é **um passo de desfazer**, mesmo em vários clipes de uma vez.
+- Arquivos são tratados como hostis: tamanho máximo 64 MB, até 16 LUTs, versão e formato
+  conferidos, grade sanitizada como a do projeto; nome de arquivo limpo (`../` não sai da pasta).
+- README do `koda-color` atualizado (módulos, nós, comandos). **App atualizado.**
+
+**O que funcionou**
+- Testes (`tests/marco6.rs`): colar em 2 clipes e desfazer/refazer de uma vez; modo append com
+  ids novos; aplicar de um clipe; copiar/colar nó por índice e por "replace" com desfazer;
+  powergrade salvo num projeto e aplicado num projeto novo (LUT importada, nó apontando para ela,
+  sem duplicar ao aplicar de novo); arquivos quebrados recusados.
+
+**Decisões para revisar**
+- A área de cópia vale enquanto o app está aberto (não vai para o clipboard do sistema).
+- Aplicar/colar por padrão **substitui** a grade do clipe (como o DaVinci); `mode: "append"`
+  acrescenta os nós no fim.
+- Extensão `.kpg` e pasta padrão dentro da pasta de dados do FilmCraft.
+
+**Próximo passo**
+- Marco 5: a tela da página Cor.
+
 ## 2026-10-16 — Marco 4 da aba Cor: nitidez e glow (noite, trabalho sozinho)
 
 **O que foi feito**

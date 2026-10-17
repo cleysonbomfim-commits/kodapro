@@ -58,6 +58,55 @@ pub fn commands() -> Vec<CommandSpec> {
             r#"{"clip":clipId?,"node":nodeId,"what":"all"|"lift"|"gamma"|"gain"|"offset"|"curves"|"curve.y"?}"#,
             reset_params,
         ),
+        CommandSpec {
+            id: "koda.color.copyGrade",
+            label: "Copy Color Grade",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"clip":clipId?}"#,
+            enabled: has_sequence,
+            run: copy_grade,
+            journal: false,
+        },
+        cmd("koda.color.pasteGrade", "Paste Color Grade", r#"{"clip":clipId?,"clips":[clipId]?,"mode":"replace"|"append"?}"#, paste_grade),
+        cmd(
+            "koda.color.applyGradeFrom",
+            "Apply Grade from Clip",
+            r#"{"from":clipId,"clip":clipId?,"clips":[clipId]?,"mode":"replace"|"append"?}"#,
+            apply_grade_from,
+        ),
+        CommandSpec {
+            id: "koda.color.copyNode",
+            label: "Copy Color Node",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"clip":clipId?,"node":nodeId}"#,
+            enabled: has_sequence,
+            run: copy_node,
+            journal: false,
+        },
+        cmd("koda.color.pasteNode", "Paste Color Node", r#"{"clip":clipId?,"index":int?,"replace":nodeId?}"#, paste_node),
+        CommandSpec {
+            id: "koda.color.savePowergrade",
+            label: "Save Powergrade",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"clip":clipId?,"name":str,"path":str?}"#,
+            enabled: has_sequence,
+            run: save_powergrade,
+            journal: false,
+        },
+        cmd("koda.color.applyPowergrade", "Apply Powergrade", r#"{"path":str,"clip":clipId?,"clips":[clipId]?,"mode":"replace"|"append"?}"#, apply_powergrade),
+        CommandSpec {
+            id: "koda.color.listPowergrades",
+            label: "List Powergrades",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"dir":str?}"#,
+            enabled: always,
+            run: list_powergrades,
+            journal: false,
+        },
         cmd("koda.color.loadLut", "Load LUT into Color Node", r#"{"clip":clipId?,"node":nodeId,"path":str}"#, load_lut),
     ]
 }
@@ -263,4 +312,211 @@ fn reset_params(s: &mut Session, p: &Value) -> Result<Value> {
         primaries_mut(g, n)?.reset(&what)?;
         Ok(json!({ "node": n }))
     })
+}
+
+// ---- copy / paste and powergrades (marco 6) ----
+
+/// Several target clips: `clips`, else `clip`, else every selected clip. Each must be a media clip
+/// in the open sequence.
+fn targets(s: &Session, cmd: &str, p: &Value) -> Result<Vec<ClipId>> {
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let ids: Vec<ClipId> = match (p.get("clips"), p.get("clip")) {
+        (Some(v), _) => serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "clips: expected a list of clip ids"))?,
+        (None, Some(v)) => vec![serde_json::from_value(v.clone()).map_err(|_| bad(cmd, "clip: expected a clip id"))?],
+        (None, None) => s.state.selection.clone(),
+    };
+    if ids.is_empty() {
+        return Err(EngineError::Disabled(cmd.to_string(), "select clips, or name them with \"clips\"".into()));
+    }
+    if ids.len() > 10_000 {
+        return Err(bad(cmd, "clips: too many"));
+    }
+    let mut out: Vec<ClipId> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let (_, item) = seq.find_item(id).ok_or_else(|| bad(cmd, format!("clip {id:?} is not in the open sequence")))?;
+        let is_media = s.project.item(item.item).is_some_and(|i| matches!(i.kind, ItemKind::Media(_) | ItemKind::Subclip { .. }));
+        if !is_media {
+            return Err(bad(cmd, format!("clip {id:?} is not a media clip (only video clips have a color grade)")));
+        }
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+/// How a pasted grade meets the clip's own: replace it (DaVinci's default) or go after its nodes.
+fn paste_mode(cmd: &str, p: &Value) -> Result<bool> {
+    match p.get("mode").map(|v| v.as_str()) {
+        None | Some(Some("replace")) => Ok(false),
+        Some(Some("append")) => Ok(true),
+        _ => Err(bad(cmd, "mode: \"replace\" or \"append\"")),
+    }
+}
+
+/// The grade of clip `id` in the open sequence.
+fn grade_at(s: &Session, cmd: &str, id: ClipId) -> Result<Grade> {
+    let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
+    let (_, item) = seq.find_item(id).ok_or_else(|| bad(cmd, "clip not found"))?;
+    store::grade_of(item).map_err(|e| bad(cmd, e))
+}
+
+/// Put `pg` on every clip of `ids` as one undo step: its LUTs join the project's library, then
+/// each clip's grade is replaced by it (or gets its nodes appended, with new ids).
+fn put_grade(s: &mut Session, cmd: &'static str, label: &str, ids: Vec<ClipId>, pg: crate::library::Powergrade, append: bool) -> Result<Value> {
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    let n = ids.len();
+    s.edit(label, move |project, _| {
+        let mut grade = pg.grade.clone();
+        crate::library::import_luts(&pg.luts, grade.nodes.iter_mut(), project);
+        let seq = project.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+        for id in &ids {
+            let (_, item) = seq.find_item_mut(*id).ok_or_else(|| EngineError::Other("the clip went away".into()))?;
+            let new = if append {
+                let mut g = store::grade_of(item).map_err(|e| bad(cmd, e))?;
+                for node in &grade.nodes {
+                    g.add(node.kind.clone(), Some(&node.name), None).map_err(|e| bad(cmd, e))?;
+                    if let Some(last) = g.nodes.last_mut() {
+                        last.enabled = node.enabled;
+                    }
+                }
+                g
+            } else {
+                grade.clone()
+            };
+            store::set_grade(item, &new);
+        }
+        Ok(())
+    })?;
+    Ok(json!({ "clips": n }))
+}
+
+fn copy_grade(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.copyGrade";
+    let id = target(s, CMD, p)?;
+    let g = grade_at(s, CMD, id)?;
+    let nodes = g.nodes.len();
+    crate::library::copy(crate::library::Copied::Grade(crate::library::Powergrade::new("", g, &s.project)));
+    Ok(json!({ "clip": id, "nodes": nodes }))
+}
+
+fn paste_grade(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.pasteGrade";
+    let append = paste_mode(CMD, p)?;
+    let Some(crate::library::Copied::Grade(pg)) = crate::library::clipboard() else {
+        return Err(EngineError::Disabled(CMD.into(), "no grade was copied (koda.color.copyGrade)".into()));
+    };
+    let ids = targets(s, CMD, p)?;
+    put_grade(s, CMD, "Paste Color Grade", ids, pg, append)
+}
+
+fn apply_grade_from(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.applyGradeFrom";
+    let append = paste_mode(CMD, p)?;
+    let from: ClipId = p.get("from").cloned().and_then(|v| serde_json::from_value(v).ok()).ok_or_else(|| bad(CMD, "from: expected a clip id"))?;
+    let g = grade_at(s, CMD, from)?;
+    let ids: Vec<ClipId> = targets(s, CMD, p)?.into_iter().filter(|c| *c != from).collect();
+    if ids.is_empty() {
+        return Err(bad(CMD, "no other clip to apply the grade to"));
+    }
+    let pg = crate::library::Powergrade::new("", g, &s.project);
+    put_grade(s, CMD, "Apply Grade from Clip", ids, pg, append)
+}
+
+fn copy_node(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.copyNode";
+    let n = node_id(CMD, p)?;
+    let id = target(s, CMD, p)?;
+    let g = grade_at(s, CMD, id)?;
+    let node = g.nodes.iter().find(|x| x.id == n).ok_or_else(|| bad(CMD, format!("no node {n} in this grade")))?.clone();
+    let luts = crate::library::embedded_luts(std::iter::once(&node), &s.project);
+    let ty = node.kind.type_name();
+    crate::library::copy(crate::library::Copied::Node(node, luts));
+    Ok(json!({ "node": n, "type": ty }))
+}
+
+/// Paste the copied node: inserted as a new node (at `index`, else the end), or onto the node
+/// `replace` (its settings replaced; its id, name and on/off kept, like DaVinci's paste
+/// attributes).
+fn paste_node(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.pasteNode";
+    let Some(crate::library::Copied::Node(node, luts)) = crate::library::clipboard() else {
+        return Err(EngineError::Disabled(CMD.into(), "no node was copied (koda.color.copyNode)".into()));
+    };
+    let index = match p.get("index") {
+        None => None,
+        Some(v) => Some(v.as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| bad(CMD, "index: expected a position from 0"))?),
+    };
+    let replace = match p.get("replace") {
+        None => None,
+        Some(v) => Some(v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad(CMD, "replace: expected a node id"))?),
+    };
+    let id = target(s, CMD, p)?;
+    let seq_id = s.state.active_sequence.ok_or(EngineError::NoSequence)?;
+    s.edit("Paste Color Node", move |project, _| {
+        let mut node = node;
+        crate::library::import_luts(&luts, std::iter::once(&mut node), project);
+        let seq = project.sequence_mut(seq_id).ok_or(EngineError::NoSequence)?;
+        let (_, item) = seq.find_item_mut(id).ok_or_else(|| EngineError::Other("the clip went away".into()))?;
+        let mut g = store::grade_of(item).map_err(|e| bad(CMD, e))?;
+        let out = match replace {
+            Some(r) => {
+                g.node_mut(r).map_err(|e| bad(CMD, e))?.kind = node.kind;
+                r
+            }
+            None => {
+                let new = g.add(node.kind, Some(&node.name), index).map_err(|e| bad(CMD, e))?;
+                if let Ok(x) = g.node_mut(new) {
+                    x.enabled = node.enabled;
+                }
+                new
+            }
+        };
+        store::set_grade(item, &g);
+        Ok(json!({ "node": out }))
+    })
+}
+
+fn powergrade_path(cmd: &str, p: &Value, name: &str) -> Result<std::path::PathBuf> {
+    match p.get("path") {
+        Some(v) => Ok(std::path::PathBuf::from(v.as_str().ok_or_else(|| bad(cmd, "path: expected a file path"))?)),
+        None => crate::library::default_dir()
+            .map(|d| d.join(crate::library::file_name(name)))
+            .ok_or_else(|| bad(cmd, "no library folder on this system: pass \"path\"")),
+    }
+}
+
+fn save_powergrade(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.savePowergrade";
+    let name = p.get("name").and_then(Value::as_str).ok_or_else(|| bad(CMD, "name: expected text"))?.to_string();
+    let id = target(s, CMD, p)?;
+    let g = grade_at(s, CMD, id)?;
+    if g.nodes.is_empty() {
+        return Err(bad(CMD, "the clip has no grade to save"));
+    }
+    let path = powergrade_path(CMD, p, &name)?;
+    let pg = crate::library::Powergrade::new(&name, g, &s.project);
+    crate::library::save(&path, &pg).map_err(|e| bad(CMD, e))?;
+    Ok(json!({ "path": path.to_string_lossy(), "name": pg.name, "nodes": pg.grade.nodes.len(), "luts": pg.luts.len() }))
+}
+
+fn apply_powergrade(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.applyPowergrade";
+    let append = paste_mode(CMD, p)?;
+    let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad(CMD, "path: expected a .kpg file"))?;
+    let pg = crate::library::load(std::path::Path::new(path)).map_err(|e| bad(CMD, e))?;
+    let ids = targets(s, CMD, p)?;
+    let name = pg.name.clone();
+    let mut out = put_grade(s, CMD, "Apply Powergrade", ids, pg, append)?;
+    out["name"] = json!(name);
+    Ok(out)
+}
+
+fn list_powergrades(_: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.listPowergrades";
+    let dir = match p.get("dir") {
+        Some(v) => std::path::PathBuf::from(v.as_str().ok_or_else(|| bad(CMD, "dir: expected a folder"))?),
+        None => crate::library::default_dir().ok_or_else(|| bad(CMD, "no library folder on this system: pass \"dir\""))?,
+    };
+    Ok(json!({ "dir": dir.to_string_lossy(), "powergrades": crate::library::list(&dir) }))
 }

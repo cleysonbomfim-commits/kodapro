@@ -14,6 +14,7 @@ pub mod cst;
 pub mod deltae;
 pub mod eval;
 pub mod grade;
+pub mod library;
 pub mod primaries;
 pub mod spatial;
 pub mod store;
