@@ -187,3 +187,93 @@ fn effects_library_adds_nodes_and_the_palette_edits_them() {
     assert_eq!(d.grade()["bypass"], true);
     assert!(d.harness.state().ui_error.is_none());
 }
+
+/// Marco 7: the página Cor's DaVinci shortcuts work there, and only there.
+#[test]
+fn color_page_shortcuts_like_davinci() {
+    let mut d = open();
+    let nodes = |d: &mut Driver| d.grade()["nodes"].as_array().unwrap().clone();
+    // Alt+S: a new serial node (a corrector, after the selected one)
+    d.ok("ui.key", json!({"key": "Alt+S"}));
+    d.frames(2);
+    d.ok("ui.key", json!({"key": "Alt+S"}));
+    d.frames(2);
+    let n = nodes(&mut d);
+    assert_eq!(n.len(), 2, "{n:?}");
+    assert!(n.iter().all(|x| x["type"] == "primaries"));
+    // Cmd+D: the selected (the last added) node off and on
+    d.ok("ui.key", json!({"key": "Cmd+D"}));
+    d.frames(2);
+    assert_eq!(nodes(&mut d)[1]["enabled"], false);
+    d.ok("ui.key", json!({"key": "Cmd+D"}));
+    d.frames(2);
+    assert_eq!(nodes(&mut d)[1]["enabled"], true);
+    // Shift+D: before / after
+    d.ok("ui.key", json!({"key": "Shift+D"}));
+    d.frames(2);
+    assert_eq!(d.grade()["bypass"], true);
+    d.ok("ui.key", json!({"key": "Shift+D"}));
+    d.frames(2);
+    // Cmd+Shift+C on this clip, ArrowDown to the next one, Cmd+Shift+V there
+    d.ok("ui.key", json!({"key": "Cmd+Shift+C"}));
+    d.frames(2);
+    let first = d.exec("state.inspect", json!({}))["selection"].clone();
+    d.ok("ui.key", json!({"key": "ArrowDown"}));
+    d.frames(3);
+    let second = d.exec("state.inspect", json!({}))["selection"].clone();
+    assert_ne!(first, second, "ArrowDown went to the next clip");
+    assert!(nodes(&mut d).is_empty());
+    d.ok("ui.key", json!({"key": "Cmd+Shift+V"}));
+    d.frames(2);
+    assert_eq!(nodes(&mut d).len(), 2, "the grade was pasted");
+    d.ok("ui.key", json!({"key": "ArrowUp"}));
+    d.frames(3);
+    assert_eq!(d.exec("state.inspect", json!({}))["selection"], first);
+    // on the Edit page the same keys are the Edit page's: Cmd+D does not touch the grade
+    d.click("pages.edit");
+    d.frames(2);
+    let before = d.grade();
+    d.ok("ui.key", json!({"key": "Shift+D"}));
+    d.ok("ui.key", json!({"key": "Alt+S"}));
+    d.frames(2);
+    assert_eq!(d.grade(), before);
+    assert!(d.harness.state().ui_error.is_none());
+}
+
+/// Marco 7: a CST on a clip interpreted as S-Log3 shows the double-conversion warning, and its
+/// button puts the interpretation back.
+#[test]
+fn double_conversion_warning() {
+    let mut d = open();
+    d.click("cor.fx.cst");
+    assert!(d.element("cor.viewer.doubleConversion").is_none());
+    let clip = d.exec("state.inspect", json!({}))["selection"][0].clone();
+    assert!(d.exec("koda.color.inspect", json!({ "clip": clip }))["doubleConversion"].is_null());
+    // the media item of the clip
+    let it = d.harness.state().session.active_sequence().unwrap().find_item(serde_json::from_value(clip.clone()).unwrap()).unwrap().1.item;
+    d.exec("clip.interpretFootage", json!({ "items": [it], "colorSpace": "slog3-sgamut3cine" }));
+    d.frames(3);
+    assert!(d.element("cor.viewer.doubleConversion").is_some(), "the warning is shown");
+    d.click("cor.viewer.fixInterpretation");
+    d.frames(3);
+    assert!(d.element("cor.viewer.doubleConversion").is_none(), "the button put the interpretation back");
+}
+
+/// Marco 7 regression: dragging a curve point moves that point. The drag starts only after the
+/// pointer has moved past egui's threshold; the point used to be looked up there, missed, and a
+/// new point was added instead (the end point moved).
+#[test]
+fn dragging_a_curve_point_moves_that_point() {
+    let mut d = open();
+    d.click("cor.fx.primaries");
+    d.click("cor.palette.curves");
+    d.click("cor.curve.editor");
+    let y = |d: &mut Driver| d.grade()["nodes"][0]["curves"]["y"].as_array().unwrap().clone();
+    assert_eq!(y(&mut d).len(), 3);
+    d.drag("cor.curve.point.1", 0.0, -30.0, 8);
+    let pts = y(&mut d);
+    assert_eq!(pts.len(), 3, "no point added: {pts:?}");
+    let mid = &pts[1];
+    assert!(mid[1].as_f64().unwrap() > mid[0].as_f64().unwrap() + 0.03, "the middle point went up: {pts:?}");
+    assert_eq!(pts[2], json!([1.0, 1.0]), "the end point stayed: {pts:?}");
+}

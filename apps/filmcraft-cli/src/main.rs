@@ -458,6 +458,12 @@ async fn cli() {
                     let written = written_paths(&v, out).join(", ");
                     check_offline(&a, &offline_media(&v), &format!("export: {written}"));
                     diag(format_args!("exported {written} in {:.1}s", t0.elapsed().as_secs_f64()));
+                    // KODA Pro: say when frames left the GPU renderer for the CPU (a GPU error
+                    // turns the GPU off for the rest of the process)
+                    let g = filmcraft_export::gpu_render_stats();
+                    if g.fallbacks > 0 || std::env::var_os("FILMCRAFT_GPU_STATS").is_some() {
+                        diag(format_args!("GPU rendering: {} frames on the GPU, {} on the CPU", g.frames, g.fallbacks));
+                    }
                 }
                 Err(e) => fail(format!("export: {e}")),
             }

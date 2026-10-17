@@ -1483,6 +1483,7 @@ impl FilmcraftApp {
         // Timeline's `Delete` (Clear) swallows the app-wide `Shift+Delete` (Ripple Delete) (#680).
         let focused = self.ui.focused.title();
         let mut fire = Vec::new();
+        let mut koda_fire: Vec<&'static str> = Vec::new();
         ctx.input_mut(|i| {
             let modifiers = i.modifiers;
             // With no text on the system clipboard, egui-winit drops the Ctrl+V press but still
@@ -1510,6 +1511,10 @@ impl FilmcraftApp {
                 });
             }
             clipboard_events_as_keys(&mut i.events, modifiers);
+            // KODA Pro: the página Cor's shortcuts win while it is shown (koda::cor::SHORTCUTS)
+            if self.ui.mode == state::Mode::Color {
+                koda_fire = koda::cor::consume_shortcuts(i, text_focused);
+            }
             let panel = self.bindings.iter().filter(|b| b.3.as_deref() == Some(focused));
             let app_wide = self.bindings.iter().filter(|b| b.3.is_none());
             let mut candidates: Vec<&menus::KeyBinding> = panel.chain(app_wide).collect();
@@ -1531,6 +1536,11 @@ impl FilmcraftApp {
                 }
             }
         });
+        for id in koda_fire {
+            if let Some(Err(e)) = koda::cor::route(self, ctx, id) {
+                self.ui.status = e;
+            }
+        }
         for mut id in fire {
             // Select All / Deselect All act on the Project panel's items when it has focus (#168).
             // Select All takes only what the shown bin lists, not the whole project (#456).

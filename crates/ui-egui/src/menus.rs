@@ -181,6 +181,10 @@ pub fn targets_source(app: &FilmcraftApp, params: &Value) -> bool {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params: Value) -> Result<Value, String> {
+    // KODA Pro: the página Cor's commands (its shortcuts, `koda::cor::SHORTCUTS`)
+    if let Some(r) = crate::koda::cor::route(app, ctx, id) {
+        return r;
+    }
     if id == "edit.selectAll" && (crate::panels::graphics::select_all_edited_text(app) || crate::panels::effect_controls::select_all_keyframes(app)) {
         return Ok(Value::Null);
     }

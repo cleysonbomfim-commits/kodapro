@@ -78,6 +78,8 @@ pub struct CorState {
     pub drag_seq: u64,
     /// Powergrades listed in the Gallery (refreshed when it opens or after a save).
     pub gallery: Vec<(String, String)>,
+    /// The palette was read from the project's saved page state.
+    pub loaded: bool,
 }
 
 impl Default for CorState {
@@ -98,6 +100,7 @@ impl Default for CorState {
             edit: None,
             drag_seq: 0,
             gallery: Vec::new(),
+            loaded: false,
         }
     }
 }
@@ -286,6 +289,17 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         st.node = None;
     }
     let grade = clip.map(|id| grade_of(app, id)).unwrap_or_default();
+    // the page state saved with the project: the open palette, each clip's selected node
+    let mut page = koda_color::page::get(&app.session);
+    if !st.loaded {
+        st.loaded = true;
+        st.palette = if page.palette == "curves" { Palette::Curves } else { Palette::Primaries };
+    }
+    if st.node.is_none()
+        && let Some(n) = clip.and_then(|c| page.nodes.get(&c.0))
+    {
+        st.node = Some(*n);
+    }
     // the selection follows the grade: a removed node, or none yet → the first primaries node
     if st.node.is_none_or(|n| grade.index_of(n).is_none()) {
         st.node = grade.nodes.iter().find(|n| matches!(n.kind, NodeKind::Primaries(_))).or(grade.nodes.first()).map(|n| n.id);
@@ -316,7 +330,95 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         scopes(app, ui, l.scopes, &mut st);
     }
     viewer(app, ui, l.viewer, clip, &grade);
+    // keep the page state beside the project
+    page.palette = match st.palette {
+        Palette::Primaries => "primaries",
+        Palette::Curves => "curves",
+    }
+    .to_string();
+    if let (Some(c), Some(n)) = (clip, st.node) {
+        page.nodes.insert(c.0, n);
+    }
+    koda_color::page::set(&mut app.session, &page);
     set_state(&ctx, st);
+}
+
+// ------------------------------------------------------------------------------- shortcuts
+
+/// The página Cor's shortcuts, as in DaVinci (only while the page is shown; the Edit page keeps
+/// its own on the same keys): (modifiers, key, command id), the most specific first.
+pub const SHORTCUTS: [(egui::Modifiers, egui::Key, &str); 7] = [
+    (egui::Modifiers { alt: false, ctrl: false, shift: true, mac_cmd: false, command: true }, egui::Key::C, "page.color.copyGrade"),
+    (egui::Modifiers { alt: false, ctrl: false, shift: true, mac_cmd: false, command: true }, egui::Key::V, "page.color.pasteGrade"),
+    (egui::Modifiers::COMMAND, egui::Key::D, "page.color.toggleNode"),
+    (egui::Modifiers::SHIFT, egui::Key::D, "page.color.bypass"),
+    (egui::Modifiers::ALT, egui::Key::S, "page.color.addSerialNode"),
+    (egui::Modifiers::NONE, egui::Key::ArrowUp, "page.color.previousClip"),
+    (egui::Modifiers::NONE, egui::Key::ArrowDown, "page.color.nextClip"),
+];
+
+/// Take the page's chords out of this frame's input before the application's shortcuts see them.
+/// With a text field focused, the unmodified arrows stay with the field.
+pub fn consume_shortcuts(i: &mut egui::InputState, text_focused: bool) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for (m, k, id) in SHORTCUTS {
+        if text_focused && m.is_none() {
+            continue;
+        }
+        if i.consume_key(m, k) {
+            out.push(id);
+        }
+    }
+    out
+}
+
+/// Run a `page.color.*` command (the shortcuts, and the control channel through `menus::invoke`).
+pub fn route(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str) -> Option<Result<Value, String>> {
+    if !id.starts_with("page.color.") || id == "page.color" {
+        return None;
+    }
+    let mut st = state(ctx);
+    let clips = media_clips(app);
+    let Some(clip) = current_clip(app, &clips) else { return Some(Err("no clip to grade".into())) };
+    let grade = grade_of(app, clip);
+    let node = st.node.filter(|n| grade.index_of(*n).is_some());
+    let ex = |app: &mut FilmcraftApp, cmd: &str, p: Value| app.session.execute(cmd, p).map_err(|e| e.to_string());
+    let r = match id {
+        "page.color.addSerialNode" => {
+            let index = node.and_then(|n| grade.index_of(n)).map_or(grade.nodes.len(), |i| i + 1);
+            let v = ex(app, "koda.color.addNode", json!({ "clip": clip, "type": "primaries", "index": index }));
+            if let Ok(v) = &v {
+                st.node = v.pointer("/result/node").and_then(Value::as_u64).map(|n| n as u32);
+            }
+            v
+        }
+        "page.color.toggleNode" => match node {
+            Some(n) => ex(app, "koda.color.setNodeEnabled", json!({ "clip": clip, "node": n })),
+            None => Err("no node selected".into()),
+        },
+        "page.color.bypass" => ex(app, "koda.color.setBypass", json!({ "clip": clip })),
+        "page.color.copyGrade" => ex(app, "koda.color.copyGrade", json!({ "clip": clip })),
+        "page.color.pasteGrade" => {
+            let v = ex(app, "koda.color.pasteGrade", json!({ "clips": [clip] }));
+            st.node = None;
+            v
+        }
+        "page.color.previousClip" | "page.color.nextClip" => {
+            let i = clips.iter().position(|c| c.id == clip).unwrap_or(0);
+            let j = if id.ends_with("nextClip") { (i + 1).min(clips.len().saturating_sub(1)) } else { i.saturating_sub(1) };
+            match clips.get(j) {
+                Some(c) => {
+                    app.session.state.selection = vec![c.id];
+                    let start = c.start.0;
+                    ex(app, "playhead.set", json!({ "time": start }))
+                }
+                None => Err("no clip".into()),
+            }
+        }
+        _ => return Some(Err(format!("unknown command {id}"))),
+    };
+    set_state(ctx, st);
+    Some(r)
 }
 
 // ---------------------------------------------------------------------------- icons (KODA's own)
@@ -1205,8 +1307,7 @@ fn scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, st: &mut CorState)
     sst.shown = vec![st.scope];
     let Some(_) = app.session.state.active_sequence else { return };
     let frame = app.session.sequence_rate().frame_at(app.session.playhead());
-    let prio = if app.playback.playing { 40 } else { 2 };
-    let Some(sf) = crate::panels::scopes::frame_signal(app, &ctx, "cor", frame, &sst, prio) else { return };
+    let Some(sf) = scope_frame(app, &ctx, frame, &sst) else { return };
     if !matches!(st.scope, ScopeKind::Parade | ScopeKind::Waveform) {
         crate::panels::scopes::draw(app, ui, plot, &[st.scope], &sf, &sst, "cor.scopes");
         return;
@@ -1249,6 +1350,59 @@ fn scopes(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, st: &mut CorState)
         ui.painter().image(tex.id(), plot, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     app.auto.add(&format!("cor.scopes.view.{}", st.scope.name()), plot, st.scope.label());
+}
+
+/// Frames between scope updates while playing, and the render scale then.
+const SCOPE_PLAY_STEP: i64 = 10;
+const SCOPE_PLAY_SCALE: f32 = 0.125;
+
+/// The frame the scopes read. Paused: the frame under the playhead at ¼ size, as the Lumetri
+/// Scopes. Playing: every [`SCOPE_PLAY_STEP`]th frame at ⅛ size, behind the monitor's prefetch, so
+/// the scopes' own render (the whole grade, on the CPU) does not take the decoders' time and
+/// drop frames (marco 7: 5.5 % → 0 % dropped at full resolution).
+fn scope_frame(
+    app: &mut FilmcraftApp,
+    ctx: &egui::Context,
+    frame: i64,
+    sst: &crate::panels::panel_state::ScopesState,
+) -> Option<crate::panels::scopes::ScopeFrame> {
+    use crate::frames::{FrameKey, Target};
+    let q = app.session.active_sequence()?;
+    if q.settings.color.working.is_hdr() {
+        let prio = if app.playback.playing { 40 } else { 2 };
+        return crate::panels::scopes::frame_signal(app, ctx, "cor", frame, sst, prio);
+    }
+    let seq_id = app.session.state.active_sequence?;
+    let rate = q.settings.frame_rate;
+    let rev = app.session.revision;
+    let playing = app.playback.playing;
+    let (f, scale, size, prio) = if playing { (frame - frame.rem_euclid(SCOPE_PLAY_STEP), SCOPE_PLAY_SCALE, 125, 60) } else { (frame, 0.25, 250, 2) };
+    let id = Id::new("cor-scope-signal");
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        (seq_id.0, f, rev, size).hash(&mut h);
+        h.finish()
+    };
+    let cached: Option<(u64, std::sync::Arc<filmcraft_scopes::Signal>)> = ctx.data(|d| d.get_temp(id));
+    let space = sst.color_space.resolve(false);
+    if let Some((k, sig)) = &cached
+        && *k == key
+    {
+        return Some(crate::panels::scopes::ScopeFrame { signal: sig.clone(), key, pq: false, space });
+    }
+    let fkey = FrameKey { target: Target::Sequence(seq_id), frame: f, size, revision: rev, draft: false };
+    let project = app.session.project.clone();
+    app.frames.request(fkey, rate.tick_of(f), scale, &project, prio);
+    match app.frames.get(&fkey) {
+        Some(img) => {
+            let sig = std::sync::Arc::new(filmcraft_scopes::Signal::from_rgba8(img.w, img.h, &img.px));
+            ctx.data_mut(|d| d.insert_temp(id, (key, sig.clone())));
+            Some(crate::panels::scopes::ScopeFrame { signal: sig, key, pq: false, space })
+        }
+        // while the new one renders, the last one stays
+        None => cached.map(|(k, sig)| crate::panels::scopes::ScopeFrame { signal: sig, key: k, pq: false, space }),
+    }
 }
 
 /// A parade (traces side by side) or an RGB waveform (traces over each other) as an image.
@@ -1309,6 +1463,25 @@ fn viewer(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, clip: Option<ClipI
     {
         run(app, &ctx, "koda.color.setBypass", json!({ "clip": clip, "bypass": !on }));
     }
-    let body = Rect::from_min_max(pos2(r.min.x, head.max.y), r.max);
+    let mut body = Rect::from_min_max(pos2(r.min.x, head.max.y), r.max);
+    // a clip interpreted as a camera space, graded with a CST: converted twice
+    if let Some(space) = clip.and_then(|c| koda_color::page::double_conversion(&app.session, c)) {
+        let band = Rect::from_min_size(body.min, vec2(body.width(), 44.0));
+        body.min.y = band.max.y;
+        ui.painter().rect_filled(band, 0.0, Color32::from_rgb(0x5a, 0x48, 0x10));
+        app.auto.add("cor.viewer.doubleConversion", band, tl!("Double conversion"));
+        let msg = tlf!("The clip is interpreted as {space}: it is converted before the grade and the CST node converts it again.", space = space);
+        ui.painter().text(pos2(band.min.x + 10.0, band.min.y + 13.0), Align2::LEFT_CENTER, msg, Tokens::ui(10.5), Color32::from_rgb(0xff, 0xe0, 0x8a));
+        let b = Rect::from_min_size(pos2(band.min.x + 10.0, band.min.y + 24.0), vec2(230.0, 16.0));
+        let resp = ui.interact(b, Id::new("cor-fix-interpret"), Sense::click());
+        app.auto.add("cor.viewer.fixInterpretation", b, tl!("Use the default interpretation"));
+        ui.painter().rect_filled(b, 3.0, if resp.hovered() { Color32::from_rgb(0x80, 0x68, 0x18) } else { Color32::from_rgb(0x6c, 0x58, 0x14) });
+        text(ui, b.center(), Align2::CENTER_CENTER, tl!("Use the default interpretation"), 10.0, c::TEXT);
+        if resp.clicked()
+            && let Some(item) = clip.and_then(|c| app.session.active_sequence().and_then(|q| q.find_item(c)).map(|(_, it)| it.item))
+        {
+            run(app, &ctx, "clip.interpretFootage", json!({ "items": [item], "colorSpace": "auto" }));
+        }
+    }
     crate::panels::monitor::show(app, ui, body, crate::panels::monitor::Which::Program);
 }

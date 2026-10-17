@@ -3646,3 +3646,6 @@
 	Vectorscope	矢量示波器
 	Primaries	一级调色
 	Keyframes	关键帧
+	Double conversion	双重转换
+	Use the default interpretation	使用默认解释
+	The clip is interpreted as {space}: it is converted before the grade and the CST node converts it again.	片段被解释为 {space}：它在调色之前已被转换，而 CST 节点会再次转换。

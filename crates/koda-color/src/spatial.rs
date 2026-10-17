@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 /// Largest Gaussian radius (taps each side) a sharpening pass reads.
 pub const MAX_SHARPEN_TAPS: u32 = 32;
+/// Largest Gaussian radius (taps each side) of the glow's blur, on its reduced copy.
+pub const MAX_GLOW_TAPS: u32 = 96;
 
 /// Unsharp mask on the signal: `x + amount · (x − Gaussian_radius(x))`.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -79,7 +81,7 @@ impl Sharpen {
 
 /// Normalized Gaussian weights for taps −n…n (the CPU and the shader use the same formula).
 pub fn gauss_weights(sigma: f32, n: u32) -> Vec<f32> {
-    let n = n.min(MAX_SHARPEN_TAPS) as i32;
+    let n = n.min(MAX_GLOW_TAPS) as i32;
     let w: Vec<f32> = (-n..=n).map(|i| (-((i * i) as f32) / (2.0 * sigma * sigma)).exp()).collect();
     let s: f32 = w.iter().sum();
     w.into_iter().map(|x| x / s.max(1e-12)).collect()
@@ -187,6 +189,25 @@ impl Glow {
         }
         *self = self.sanitized();
         Ok(())
+    }
+
+    /// How the blur runs at `px_scale`: (reduction factor k, sigma on the 1/k copy, taps each
+    /// side). A wide glow is blurred on a copy reduced k times (k × k block averages), then
+    /// enlarged bilinearly: the same look for a fraction of the work (marco 7).
+    pub fn blur_plan(&self, px_scale: f32) -> (u32, f32, u32) {
+        let sigma = (self.spread * px_scale).max(0.3);
+        let k: u32 = if sigma < 8.0 {
+            1
+        } else if sigma < 24.0 {
+            2
+        } else if sigma < 64.0 {
+            4
+        } else {
+            8
+        };
+        let s = sigma / k as f32;
+        let taps = (3.0 * s).ceil().clamp(1.0, MAX_GLOW_TAPS as f32) as u32;
+        (k, s, taps)
     }
 
     /// The source mask of a pixel's signal: 1 above the threshold (soft over ±0.15 of luma).

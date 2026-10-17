@@ -3,6 +3,75 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-17 — Marco 7 da aba Cor: desempenho e polimento
+
+**O que foi feito**
+- **Projeto de medição** (`examples/projeto_desempenho.rs`, local): o clipe da FX30 (H.264
+  4:2:2 10 bits, 2160 × 3840, 29,97p) três vezes = 30 s, com o powergrade completo (global, CST,
+  nitidez, glow, LUT Orson) e uma cópia sem grade.
+- **Reprodução** (app real, canal de controle, app reiniciado a cada medição para não tocar do
+  cache): a página Editar não perdia quadros com o powergrade; a **página Cor perdia 1,7 % (1/2) e
+  5,5 % (cheia)** por causa dos **scopes**, que pediam uma renderização própria de cada quadro na CPU
+  com a grade inteira, disputando a CPU com os decodificadores. Agora, tocando, o scope da página
+  Cor lê um quadro a cada 10, em 1/8 do tamanho, atrás da pré-busca do monitor: **0 % perdidos em 1/2
+  e em cheia**. 25 s seguidos em resolução cheia: 0,8 % nas duas páginas, igual ao projeto sem
+  grade (são as emendas entre clipes, do decodificador do FilmCraft).
+- **Glow**: o desfoque largo agora roda numa cópia reduzida (1/2 a 1/8, guardada no canto da
+  própria textura), com Gauss de verdade, e é ampliado por interpolação bilinear; igual na GPU e na
+  CPU. No export, o glow em 4K passou de **~13 para ~3 ms por quadro** (A/B: +3,8 s → +0,9 s em
+  10 s de vídeo); a grade inteira de +7,7 s → +3,8 s em 10 s.
+- **Atalhos da página Cor, como no DaVinci**, só valendo com a página aberta (capturados antes do
+  despachante do FilmCraft): **Alt+S** nó em série, **Cmd+D** ativar/desativar nó, **Shift+D**
+  antes/depois, **Cmd+Shift+C / Cmd+Shift+V** copiar/colar grade, **↑ / ↓** clipe anterior/próximo.
+  Também são comandos `page.color.*`.
+- **Estado da página salvo no projeto**: nó selecionado de cada clipe e paleta aberta ficam no
+  arquivo, ao lado do projeto (`ProjectView.extensions["koda.color"]`, campo novo no FilmCraft para
+  telas de apps derivados), sem passo de desfazer; o modo barras/rodas já ficava no próprio nó.
+  Comandos `koda.color.pageState` / `setPageState`.
+- **Aviso de conversão dupla**: clipe interpretado como espaço de câmera (ex.: S-Log3) com nó CST
+  ativo → faixa amarela no viewer com o botão "Usar a interpretação padrão";
+  `koda.color.inspect` traz `doubleConversion`.
+- A CLI agora avisa, no fim do export, se algum quadro saiu da GPU para a CPU
+  (`FILMCRAFT_GPU_STATS=1` mostra sempre).
+- **Lista de testes do RESUMO_NOITE.md rodada sozinha no app real** pelo canal de controle (16
+  verificações, prints em `referencia/comparacoes/teste_app/`, locais): achou um bug — arrastar um
+  ponto de curva movia o ponto errado (o arraste só começa depois de o ponteiro andar alguns pixels,
+  e o ponto era procurado ali); corrigido com teste de regressão (falhava antes, passa agora).
+  Depois disso, **16 de 16** passaram. **App atualizado.**
+
+**O que funcionou — números**
+
+| Export de 30 s (4K vertical, GPU em 900 de 900 quadros) | Antes | Agora |
+|---|---|---|
+| H.264 sem grade | 53,2 s | 56,3 s |
+| H.264 com powergrade | 74,8 s | **65,5 s** |
+| ProRes 422 HQ sem grade | 62,7 s | 66,2 s |
+| ProRes 422 HQ com powergrade | 76,4 s | **72,4 s** |
+
+(sem grade é o mesmo código: a diferença é ruído da máquina, carga entre 4 e 15.) O export é
+limitado pelo codificador do FilmCraft (~16 quadros/s sem grade).
+- ΔE contra o DaVinci depois da mudança do glow: nitidez + glow (02 → 04) média **0,83** (era
+  0,81), máxima 5,36 (era 4,79). GPU × CPU: média ≤ 0,04 de 255.
+- CI completo (`cargo xtask ci`): verde, **3.513 testes**, layers, assets e wasm ok.
+
+**O que deu problema**
+- Perdi tempo com medições erradas: compilar só `-p filmcraft-cli` gera uma CLI **sem backend de
+  GPU** (os recursos do wgpu só vêm juntos ao compilar o app ou o workspace), e o export cai todo
+  na CPU sem aviso. Daí o aviso novo da CLI.
+- A máquina estava carregada (carga 13–30) por outros apps; por isso as comparações foram A/B
+  intercaladas.
+
+**Decisões para revisar**
+- ↑/↓ trocam de clipe (como no DaVinci); ←/→ continuam andando quadro a quadro.
+- Alt+S cria um nó de primárias (no DaVinci, um corretor).
+- Scopes tocando: 1 atualização a cada 10 quadros (3 por segundo); parado, o quadro exato.
+- O glow ficou um pouco mais suave na redução (ΔE máximo 4,8 → 5,4). Se quiser, dá para usar
+  redução 4× no máximo (mais fiel, um pouco mais lento).
+
+**Próximo passo**
+- O que o dono escolher: glow em várias escalas para a máxima de ΔE, calibração das primárias com
+  cartela do DaVinci, ou a próxima etapa do PLANO.
+
 ## 2026-10-17 — Fim da noite: CI completo e resumo
 
 **O que foi feito**

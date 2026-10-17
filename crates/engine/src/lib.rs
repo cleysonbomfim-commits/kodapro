@@ -264,6 +264,10 @@ pub struct EditorState {
     pub active_sequence: Option<ItemId>,
     /// Playhead per sequence.
     pub playheads: std::collections::BTreeMap<ItemId, Tick>,
+    /// View state of screens added by apps built on FilmCraft (`ProjectView::extensions`),
+    /// saved beside the project, never an undo step.
+    #[serde(default)]
+    pub view_extensions: std::collections::BTreeMap<String, Value>,
     /// Item loaded in the Source monitor and its playhead (media time).
     pub source_item: Option<ItemId>,
     pub source_playhead: Tick,
@@ -789,6 +793,7 @@ impl Session {
             active_sequence: self.state.active_sequence.filter(is_seq),
             sequences: self.state.timeline_views.iter().filter(|(id, _)| is_seq(id)).map(|(id, v)| (*id, *v)).collect(),
             playheads: self.state.playheads.iter().filter(|(id, _)| is_seq(id)).map(|(id, t)| (*id, *t)).collect(),
+            extensions: self.state.view_extensions.clone(),
         }
     }
 
@@ -816,6 +821,12 @@ impl Session {
                 self.state.playheads.insert(id, seq.settings.frame_rate.snap(t));
             }
         }
+        self.state.view_extensions = view
+            .extensions
+            .into_iter()
+            .filter(|(k, v)| k.len() <= 128 && v.to_string().len() <= filmcraft_project::ProjectView::MAX_EXTENSION_BYTES)
+            .take(filmcraft_project::ProjectView::MAX_EXTENSIONS)
+            .collect();
     }
 
     /// Every edit passes through here: one that would put a sequence inside itself (directly or

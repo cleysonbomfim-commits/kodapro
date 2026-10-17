@@ -3670,3 +3670,6 @@
 	Vectorscope	ベクトルスコープ
 	Primaries	プライマリー
 	Keyframes	キーフレーム
+	Double conversion	二重変換
+	Use the default interpretation	既定の解釈を使用
+	The clip is interpreted as {space}: it is converted before the grade and the CST node converts it again.	クリップは {space} として解釈されています。グレードの前に変換され、CST ノードがもう一度変換します。

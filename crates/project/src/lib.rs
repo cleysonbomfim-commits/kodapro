@@ -1310,6 +1310,11 @@ pub struct ProjectView {
     /// written before it existed have none, and every playhead starts at zero as it did then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub playheads: BTreeMap<ItemId, Tick>,
+    /// View state of screens added by apps built on FilmCraft, by key (KODA Pro's página Cor
+    /// keeps its selected nodes and open palette under `koda.color`). Untrusted like the rest:
+    /// whoever reads a key validates it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
 impl ProjectView {
@@ -1317,6 +1322,9 @@ impl ProjectView {
     /// same bound as a sequence view's scroll position. Playheads are read from project files, so
     /// nothing in them is trusted.
     pub const MAX_PLAYHEAD: Tick = Tick(10_000_000 * TICKS_PER_SECOND);
+    /// Most extension keys kept, and the largest one (its JSON text, in bytes).
+    pub const MAX_EXTENSIONS: usize = 32;
+    pub const MAX_EXTENSION_BYTES: usize = 256 * 1024;
 }
 
 /// A LUT imported into the project (`lut.import`). Lumetri refers to it as `lib:<id>`.

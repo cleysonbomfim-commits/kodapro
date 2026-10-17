@@ -13,6 +13,7 @@ Grades de cor por clipe, feitas de nós em série, no estilo do DaVinci Resolve.
 | `cst` | Matemática do nó CST (curvas, matriz, curva fílmica, compressão de gamut). |
 | `primaries` | Nó de primárias e curvas (marco 3): fórmulas, curvas monotônicas, bloco de parâmetros e tabela de curvas que a CPU e a GPU leem iguais; `koda_global()` = nó 01 do powergrade. |
 | `spatial` | Nós de nitidez e glow (marco 4). |
+| `page` | Estado da página Cor salvo junto do projeto (nó selecionado de cada clipe, paleta aberta; `ProjectView::extensions["koda.color"]`, nunca um passo de desfazer) e o aviso de conversão dupla (clipe interpretado como espaço de câmera + nó CST) (marco 7). |
 | `library` | Powergrades em arquivo (`*.kpg`, com as LUTs embutidas) e a área de cópia de grade/nó (marco 6). |
 | `deltae` | ΔE 2000 (CIEDE2000) entre imagens Rec.709 / Gamma 2.4, para comparar com o DaVinci. |
 | `commands` | `koda.color.inspect`, `addNode`, `removeNode`, `moveNode`, `renameNode`, `setNodeEnabled`, `setParam`, `setBypass`, `setGrade`, `loadLut`, `setCurve`, `resetParams`, `copyGrade`, `pasteGrade`, `applyGradeFrom`, `copyNode`, `pasteNode`, `savePowergrade`, `applyPowergrade`, `listPowergrades`. Cada edição é um passo de desfazer; alvo = `clip` (ou `clips`) ou o(s) clipe(s) selecionado(s). |
@@ -38,11 +39,21 @@ contrast 1,86. Medido: por canal ΔE 0,68 contra 1,40 na luminância; gamut comp
 trilinear (ΔE 0,091) que tetraédrica (0,095). Ferramentas: `examples/calibra_cst.rs`,
 `examples/calibra_lut.rs`, `examples/imagens_marco2.rs` (precisam de `docs/koda/cor/referencia/`).
 
+### Página Cor (marco 7)
+
+Atalhos, só com a página Cor aberta (a Editar mantém os seus nas mesmas teclas): Alt+S nó em série,
+Cmd+D ativar/desativar o nó, Shift+D antes/depois, Cmd+Shift+C / Cmd+Shift+V copiar e colar a grade,
+↑ / ↓ clipe anterior / próximo na faixa. Também são comandos `page.color.*` (canal de controle).
+Comandos novos: `koda.color.pageState`, `koda.color.setPageState`; `koda.color.inspect` traz
+`doubleConversion` quando o clipe seria convertido duas vezes.
+
 ### Efeitos espaciais na GPU
 
 Mid Detail, nitidez e glow leem pixels vizinhos. O gancho `filmcraft_render::external::GpuPass`
 tem `save` (guarda a imagem que o passe lê), `blur` (box blur do próprio FilmCraft, igual na CPU)
-e `combine` (o passe recebe a imagem guardada em `aux`).
+e `combine` (o passe recebe a imagem guardada em `aux`). O glow desfoca uma cópia reduzida da
+imagem (1/2 a 1/8, guardada no canto da própria textura) com Gauss de verdade e amplia por
+interpolação bilinear: em 4K, de ~13 para ~3 ms por quadro no export (marco 7).
 
 ## Como se liga ao FilmCraft
 

@@ -28,7 +28,8 @@ const NODE_MID_DETAIL: u32 = 5u;
 const NODE_TO_SIGNAL: u32 = 6u;
 const NODE_GAUSS: u32 = 7u;
 const NODE_SHARPEN: u32 = 8u;
-const NODE_GLOW_SOURCE: u32 = 9u;
+const NODE_GLOW_DOWN: u32 = 9u;
+const NODE_GLOW_BLUR: u32 = 11u;
 const NODE_GLOW: u32 = 10u;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
@@ -354,13 +355,76 @@ fn glow_mask(c: vec3<f32>) -> f32 {
     return smoothw(t - 0.15, t + 0.15, dot(c, LUMA));
 }
 
-fn glow_source(p: vec2<i32>) -> vec4<f32> {
-    let q = textureLoad(src, p, 0);
-    if q.a <= 0.0 {
+// The glow works on a copy reduced k = u.i1.z times, kept in the top-left corner of the
+// texture (koda_color::eval::glow_down): rw × rh = ceil(size / k).
+fn glow_region() -> vec2<i32> {
+    let k = i32(max(u.i1.z, 1u));
+    return vec2<i32>((i32(u.i0.y) + k - 1) / k, (i32(u.i0.z) + k - 1) / k);
+}
+
+// The masked source, premultiplied signal, as k × k block means (`src` = the picture).
+fn glow_down(p: vec2<i32>) -> vec4<f32> {
+    let reg = glow_region();
+    if p.x >= reg.x || p.y >= reg.y {
         return vec4<f32>(0.0);
     }
-    let s = unpremul_signal(q);
-    return vec4<f32>(s * glow_mask(s) * q.a, q.a);
+    let k = i32(max(u.i1.z, 1u));
+    let size = vec2<i32>(i32(u.i0.y), i32(u.i0.z));
+    var acc = vec4<f32>(0.0);
+    var n = 0.0;
+    for (var yy = p.y * k; yy < min((p.y + 1) * k, size.y); yy++) {
+        for (var xx = p.x * k; xx < min((p.x + 1) * k, size.x); xx++) {
+            let q = textureLoad(src, vec2<i32>(xx, yy), 0);
+            n += 1.0;
+            if q.a > 0.0 {
+                let s = unpremul_signal(q);
+                acc += vec4<f32>(s * glow_mask(s) * q.a, q.a);
+            }
+        }
+    }
+    return acc / max(n, 1.0);
+}
+
+// One direction of the glow's Gaussian inside the reduced copy (sigma u.p2.x, taps u.i1.y,
+// vertical when u.i1.w == 1), edges clamped to the copy.
+fn glow_blur(p: vec2<i32>) -> vec4<f32> {
+    let reg = glow_region();
+    if p.x >= reg.x || p.y >= reg.y {
+        return vec4<f32>(0.0);
+    }
+    let n = i32(u.i1.y);
+    let sigma = u.p2.x;
+    var total = 0.0;
+    for (var j = -n; j <= n; j++) {
+        total += exp(-f32(j * j) / (2.0 * sigma * sigma));
+    }
+    var acc = vec4<f32>(0.0);
+    for (var j = -n; j <= n; j++) {
+        let w = exp(-f32(j * j) / (2.0 * sigma * sigma)) / max(total, 1e-12);
+        var q = p;
+        if u.i1.w == 1u {
+            q.y = clamp(p.y + j, 0, reg.y - 1);
+        } else {
+            q.x = clamp(p.x + j, 0, reg.x - 1);
+        }
+        acc += textureLoad(src, q, 0) * w;
+    }
+    return acc;
+}
+
+// Bilinear sample of the reduced copy at pixel p of the picture.
+fn glow_up(p: vec2<i32>) -> vec4<f32> {
+    let reg = glow_region();
+    let k = f32(max(u.i1.z, 1u));
+    let f = clamp((vec2<f32>(p) + vec2<f32>(0.5)) / k - vec2<f32>(0.5), vec2<f32>(0.0), vec2<f32>(reg - vec2<i32>(1)));
+    let i0 = vec2<i32>(floor(f));
+    let i1 = min(i0 + vec2<i32>(1), reg - vec2<i32>(1));
+    let t = f - vec2<f32>(i0);
+    let a = textureLoad(src, i0, 0);
+    let b = textureLoad(src, vec2<i32>(i1.x, i0.y), 0);
+    let c = textureLoad(src, vec2<i32>(i0.x, i1.y), 0);
+    let d = textureLoad(src, i1, 0);
+    return (a * (1.0 - t.x) + b * t.x) * (1.0 - t.y) + (c * (1.0 - t.x) + d * t.x) * t.y;
 }
 
 fn soft_light(b: f32, s: f32) -> f32 {
@@ -395,7 +459,7 @@ fn glow(p: vec2<i32>) -> vec4<f32> {
     let x = unpremul_signal(o);
     let srcp = x * glow_mask(x);
     let k = u.p1.x;
-    let g0 = unpremul(textureLoad(src, p, 0)) * (1.0 - k) + srcp * k;
+    let g0 = unpremul(glow_up(p)) * (1.0 - k) + srcp * k;
     let y = dot(g0, LUMA);
     let g = vec3<f32>(
         pow(max(y + u.p0.z * (g0.r - y), 0.0), u.p0.w),
@@ -446,8 +510,12 @@ fn ext_px(@builtin(global_invocation_id) id: vec3<u32>) {
             textureStore(dst, p, sharpen(p));
             return;
         }
-        case NODE_GLOW_SOURCE: {
-            textureStore(dst, p, glow_source(p));
+        case NODE_GLOW_DOWN: {
+            textureStore(dst, p, glow_down(p));
+            return;
+        }
+        case NODE_GLOW_BLUR: {
+            textureStore(dst, p, glow_blur(p));
             return;
         }
         case NODE_GLOW: {

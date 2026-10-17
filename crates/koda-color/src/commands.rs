@@ -112,6 +112,26 @@ pub fn commands() -> Vec<CommandSpec> {
             run: list_powergrades,
             journal: false,
         },
+        CommandSpec {
+            id: "koda.color.pageState",
+            label: "Color Page State",
+            menu: &[],
+            shortcut: None,
+            params: "{}",
+            enabled: always,
+            run: page_state,
+            journal: false,
+        },
+        CommandSpec {
+            id: "koda.color.setPageState",
+            label: "Set Color Page State",
+            menu: &[],
+            shortcut: None,
+            params: r#"{"palette":"primaries"|"curves"?,"clip":clipId?,"node":nodeId?}"#,
+            enabled: always,
+            run: set_page_state,
+            journal: false,
+        },
         cmd("koda.color.loadLut", "Load LUT into Color Node", r#"{"clip":clipId?,"node":nodeId,"path":str}"#, load_lut),
     ]
 }
@@ -168,7 +188,9 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let seq = s.active_sequence().ok_or(EngineError::NoSequence)?;
     let (_, item) = seq.find_item(id).ok_or_else(|| bad(CMD, "clip not found"))?;
     let g = store::grade_of(item).map_err(|e| bad(CMD, e))?;
-    Ok(json!({ "clip": id, "grade": g }))
+    let warning = crate::page::double_conversion(s, id)
+        .map(|space| format!("the clip is interpreted as {space}: it is converted before the grade, and its CST node converts it again"));
+    Ok(json!({ "clip": id, "grade": g, "doubleConversion": warning }))
 }
 
 fn add_node(s: &mut Session, p: &Value) -> Result<Value> {
@@ -530,4 +552,27 @@ fn list_powergrades(_: &mut Session, p: &Value) -> Result<Value> {
         None => crate::library::default_dir().ok_or_else(|| bad(CMD, "no library folder on this system: pass \"dir\""))?,
     };
     Ok(json!({ "dir": dir.to_string_lossy(), "powergrades": crate::library::list(&dir) }))
+}
+
+// ---- the page's state (marco 7) ----
+
+fn page_state(s: &mut Session, _: &Value) -> Result<Value> {
+    Ok(serde_json::to_value(crate::page::get(s)).unwrap_or_default())
+}
+
+/// Merge into the page state: the open palette, and/or the selected node of a clip. Not an edit.
+fn set_page_state(s: &mut Session, p: &Value) -> Result<Value> {
+    const CMD: &str = "koda.color.setPageState";
+    let mut st = crate::page::get(s);
+    if let Some(v) = p.get("palette") {
+        let pal = v.as_str().filter(|x| crate::page::PALETTES.contains(x)).ok_or_else(|| bad(CMD, "palette: \"primaries\" or \"curves\""))?;
+        st.palette = pal.to_string();
+    }
+    if let Some(n) = p.get("node") {
+        let clip = target(s, CMD, p)?;
+        let n = n.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or_else(|| bad(CMD, "node: expected a node id"))?;
+        st.nodes.insert(clip.0, n);
+    }
+    crate::page::set(s, &st);
+    Ok(serde_json::to_value(st).unwrap_or_default())
 }

@@ -540,8 +540,10 @@ pub fn curves(app: &mut FilmcraftApp, ui: &mut egui::Ui, r: Rect, st: &mut CorSt
         run(app, &ctx, "koda.color.setCurve", prm);
     };
     let from_screen = |pos: egui::Pos2| [((pos.x - ed.min.x) / ed.width()).clamp(0.0, 1.0), ((ed.max.y - pos.y) / ed.height()).clamp(-0.5, 1.5)];
+    // where the button went down: by the time a drag starts the pointer has moved past the
+    // drag threshold, and a point under the press must still be the one that moves
     if resp.drag_started()
-        && let Some(pos) = resp.interact_pointer_pos()
+        && let Some(pos) = ui.input(|i| i.pointer.press_origin()).or_else(|| resp.interact_pointer_pos())
     {
         let k = match hit(pos) {
             Some(k) => Some(k),
