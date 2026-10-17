@@ -284,7 +284,7 @@ impl Default for Primaries {
 }
 
 fn cl(x: f32, r: (f32, f32), default: f32) -> f32 {
-    if x.is_finite() { x.clamp(r.0, r.1) } else { default }
+    if x.is_nan() { default } else { x.clamp(r.0, r.1) }
 }
 
 impl Primaries {

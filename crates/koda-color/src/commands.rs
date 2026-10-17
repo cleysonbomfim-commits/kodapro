@@ -38,7 +38,12 @@ pub fn commands() -> Vec<CommandSpec> {
             run: inspect,
             journal: false,
         },
-        cmd("koda.color.addNode", "Add Color Node", r#"{"clip":clipId?,"type":"gain"|"cst"|"lut"|"primaries","name":str?,"index":int?}"#, add_node),
+        cmd(
+            "koda.color.addNode",
+            "Add Color Node",
+            r#"{"clip":clipId?,"type":"gain"|"cst"|"lut"|"primaries"|"sharpen"|"glow","name":str?,"index":int?}"#,
+            add_node,
+        ),
         cmd("koda.color.removeNode", "Delete Color Node", r#"{"clip":clipId?,"node":nodeId}"#, remove_node),
         cmd("koda.color.moveNode", "Move Color Node", r#"{"clip":clipId?,"node":nodeId,"index":int}"#, move_node),
         cmd("koda.color.renameNode", "Rename Color Node", r#"{"clip":clipId?,"node":nodeId,"name":str}"#, rename_node),
@@ -109,7 +114,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn add_node(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "koda.color.addNode";
     let t = p.get("type").and_then(Value::as_str).unwrap_or("gain");
-    let kind = NodeKind::from_type(t).ok_or_else(|| bad(CMD, format!("unknown node type \"{t}\" (gain, cst, lut, primaries)")))?;
+    let kind = NodeKind::from_type(t).ok_or_else(|| bad(CMD, format!("unknown node type \"{t}\" (gain, cst, lut, primaries, sharpen, glow)")))?;
     let name = match p.get("name") {
         None => None,
         Some(v) => Some(v.as_str().ok_or_else(|| bad(CMD, "name: expected text"))?.to_string()),

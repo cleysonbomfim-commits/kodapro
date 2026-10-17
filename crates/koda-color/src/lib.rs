@@ -15,6 +15,7 @@ pub mod deltae;
 pub mod eval;
 pub mod grade;
 pub mod primaries;
+pub mod spatial;
 pub mod store;
 
 use std::sync::Arc;

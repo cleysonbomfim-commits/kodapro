@@ -25,6 +25,11 @@ const NODE_CST: u32 = 2u;
 const NODE_LUT: u32 = 3u;
 const NODE_PRIMARIES: u32 = 4u;
 const NODE_MID_DETAIL: u32 = 5u;
+const NODE_TO_SIGNAL: u32 = 6u;
+const NODE_GAUSS: u32 = 7u;
+const NODE_SHARPEN: u32 = 8u;
+const NODE_GLOW_SOURCE: u32 = 9u;
+const NODE_GLOW: u32 = 10u;
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
@@ -297,15 +302,159 @@ fn mid_detail(p: vec2<i32>) -> vec4<f32> {
     return vec4<f32>(to_linear1(c.r) * o.a, to_linear1(c.g) * o.a, to_linear1(c.b) * o.a, o.a);
 }
 
+// One direction of a separable Gaussian (koda_color::eval::gauss_cpu): sigma u.p0.x, taps each
+// side u.i1.y, vertical when u.i1.z == 1, edges clamped, all four channels.
+fn gauss_pass(p: vec2<i32>) -> vec4<f32> {
+    let n = i32(u.i1.y);
+    let sigma = u.p0.x;
+    let size = vec2<i32>(i32(u.i0.y), i32(u.i0.z));
+    var acc = vec4<f32>(0.0);
+    var total = 0.0;
+    for (var j = -n; j <= n; j++) {
+        total += exp(-f32(j * j) / (2.0 * sigma * sigma));
+    }
+    for (var j = -n; j <= n; j++) {
+        let w = exp(-f32(j * j) / (2.0 * sigma * sigma)) / max(total, 1e-12);
+        var q = p;
+        if u.i1.z == 1u {
+            q.y = clamp(p.y + j, 0, size.y - 1);
+        } else {
+            q.x = clamp(p.x + j, 0, size.x - 1);
+        }
+        acc += textureLoad(src, q, 0) * w;
+    }
+    return acc;
+}
+
+fn unpremul(px: vec4<f32>) -> vec3<f32> {
+    if px.a <= 0.0 {
+        return vec3<f32>(0.0);
+    }
+    return px.rgb / px.a;
+}
+
+// Sharpen combine: `src` the blurred signal, `aux` the signal (both premultiplied).
+fn sharpen(p: vec2<i32>) -> vec4<f32> {
+    let s = textureLoad(aux, p, 0);
+    if s.a <= 0.0 {
+        return s;
+    }
+    let x = unpremul(s);
+    let g = unpremul(textureLoad(src, p, 0));
+    let o = x + u.p0.x * (x - g);
+    return vec4<f32>(to_linear1(o.r) * s.a, to_linear1(o.g) * s.a, to_linear1(o.b) * s.a, s.a);
+}
+
+// Glow source mask (koda_color::spatial::Glow::mask): threshold u.p0.x.
+fn glow_mask(c: vec3<f32>) -> f32 {
+    let t = u.p0.x;
+    if t <= 0.0 {
+        return 1.0;
+    }
+    return smoothw(t - 0.15, t + 0.15, dot(c, LUMA));
+}
+
+fn glow_source(p: vec2<i32>) -> vec4<f32> {
+    let q = textureLoad(src, p, 0);
+    if q.a <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let s = unpremul_signal(q);
+    return vec4<f32>(s * glow_mask(s) * q.a, q.a);
+}
+
+fn soft_light(b: f32, s: f32) -> f32 {
+    if s <= 0.5 {
+        return b - (1.0 - 2.0 * s) * b * (1.0 - b);
+    }
+    var d: f32;
+    if b <= 0.25 {
+        d = ((16.0 * b - 12.0) * b + 4.0) * b;
+    } else {
+        d = sqrt(max(b, 0.0));
+    }
+    return b + (2.0 * s - 1.0) * (d - b);
+}
+
+fn recover(v: f32, amount: f32) -> f32 {
+    let knee = 0.8;
+    if amount <= 0.0 || v <= knee {
+        return v;
+    }
+    let r = knee + (1.0 - knee) * (1.0 - exp(-(v - knee) / (1.0 - knee)));
+    return v + (r - v) * amount;
+}
+
+// Glow combine (koda_color::spatial::Glow::composite): `src` the blurred source, `aux` the
+// picture. p0 = threshold, gain, saturation, gamma; p1 = core, opacity, recovery; i1.y style.
+fn glow(p: vec2<i32>) -> vec4<f32> {
+    let o = textureLoad(aux, p, 0);
+    if o.a <= 0.0 {
+        return o;
+    }
+    let x = unpremul_signal(o);
+    let srcp = x * glow_mask(x);
+    let k = u.p1.x;
+    let g0 = unpremul(textureLoad(src, p, 0)) * (1.0 - k) + srcp * k;
+    let y = dot(g0, LUMA);
+    let g = vec3<f32>(
+        pow(max(y + u.p0.z * (g0.r - y), 0.0), u.p0.w),
+        pow(max(y + u.p0.z * (g0.g - y), 0.0), u.p0.w),
+        pow(max(y + u.p0.z * (g0.b - y), 0.0), u.p0.w),
+    ) * u.p0.y;
+    var c: vec3<f32>;
+    for (var i = 0; i < 3; i++) {
+        let b = x[i];
+        let t = g[i];
+        var v: f32;
+        switch u.i1.y {
+            case 0u: { v = soft_light(t, b); }
+            case 1u: { v = 1.0 - (1.0 - b) * (1.0 - t); }
+            case 2u: { v = b + t; }
+            default: { v = t; }
+        }
+        c[i] = recover(b + (v - b) * u.p1.y, u.p1.z);
+    }
+    return vec4<f32>(to_linear1(c.r) * o.a, to_linear1(c.g) * o.a, to_linear1(c.b) * o.a, o.a);
+}
+
 @compute @workgroup_size(16, 16)
 fn ext_px(@builtin(global_invocation_id) id: vec3<u32>) {
     if id.x >= u.i0.y || id.y >= u.i0.z {
         return;
     }
     let p = vec2<i32>(id.xy);
-    if u.i1.x == NODE_MID_DETAIL {
-        textureStore(dst, p, mid_detail(p));
-        return;
+    switch u.i1.x {
+        case NODE_MID_DETAIL: {
+            textureStore(dst, p, mid_detail(p));
+            return;
+        }
+        case NODE_TO_SIGNAL: {
+            let q = textureLoad(src, p, 0);
+            if q.a <= 0.0 {
+                textureStore(dst, p, vec4<f32>(0.0));
+            } else {
+                textureStore(dst, p, vec4<f32>(unpremul_signal(q) * q.a, q.a));
+            }
+            return;
+        }
+        case NODE_GAUSS: {
+            textureStore(dst, p, gauss_pass(p));
+            return;
+        }
+        case NODE_SHARPEN: {
+            textureStore(dst, p, sharpen(p));
+            return;
+        }
+        case NODE_GLOW_SOURCE: {
+            textureStore(dst, p, glow_source(p));
+            return;
+        }
+        case NODE_GLOW: {
+            textureStore(dst, p, glow(p));
+            return;
+        }
+        default: {}
     }
     let px = textureLoad(src, p, 0);
     let a = px.a;

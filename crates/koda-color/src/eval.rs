@@ -79,6 +79,17 @@ enum Stage {
         amount: f32,
         radii: Vec<u32>,
     },
+    /// Unsharp mask on the signal, an explicit Gaussian of `taps` each side.
+    Sharpen {
+        amount: f32,
+        sigma: f32,
+        taps: u32,
+    },
+    /// Glow: the masked source blurred by box passes of `radii`, composited back.
+    Glow {
+        glow: crate::spatial::Glow,
+        radii: Vec<u32>,
+    },
 }
 
 /// Box radii of a Gaussian of `sigma` working-image pixels (the same on the CPU and the GPU).
@@ -122,6 +133,14 @@ fn stages(grade: &Grade, luts: &Luts, px_scale: f32) -> Vec<Stage> {
                     push(&mut out, Ready::Prim(Arc::new(r), aux));
                 }
             }
+            NodeKind::Sharpen(x) => {
+                let (sigma, taps) = x.kernel(scale);
+                out.push(Stage::Sharpen { amount: x.amount, sigma, taps });
+            }
+            NodeKind::Glow(x) => {
+                let radii = gauss_radii(x.spread * scale);
+                out.push(Stage::Glow { glow: *x, radii });
+            }
         }
     }
     out
@@ -148,7 +167,7 @@ fn run(r: &Ready, c: [f32; 3]) -> [f32; 3] {
 pub fn apply_signal(grade: &Grade, luts: &Luts, c: [f32; 3]) -> [f32; 3] {
     stages(grade, luts, 1.0).iter().fold(c, |c, s| match s {
         Stage::Pixel(v) => v.iter().fold(c, |c, r| run(r, c)),
-        Stage::MidDetail { .. } => c,
+        Stage::MidDetail { .. } | Stage::Sharpen { .. } | Stage::Glow { .. } => c,
     })
 }
 
@@ -156,6 +175,69 @@ pub fn apply_signal(grade: &Grade, luts: &Luts, c: [f32; 3]) -> [f32; 3] {
 fn unpremul_signal(p: &[f32]) -> Option<[f32; 3]> {
     let a = *p.get(3)?;
     (a > 0.0).then(|| [to_signal(p[0] / a), to_signal(p[1] / a), to_signal(p[2] / a)])
+}
+
+/// Separable Gaussian (explicit taps, edges clamped) of a premultiplied image, all 4 channels:
+/// the CPU twin of the shader's `gauss_pass`.
+fn gauss_cpu(img: &Image, sigma: f32, taps: u32) -> Image {
+    use rayon::prelude::*;
+    let k = crate::spatial::gauss_weights(sigma, taps);
+    let n = taps.min(crate::spatial::MAX_SHARPEN_TAPS) as isize;
+    let (w, h) = (img.w, img.h);
+    let pass = |src: &Image, vertical: bool| -> Image {
+        let mut out = Image { w, h, px: vec![0.0; src.px.len()] };
+        out.px.par_chunks_mut(w * 4).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let mut acc = [0f32; 4];
+                for (j, kk) in k.iter().enumerate() {
+                    let d = j as isize - n;
+                    let (sx, sy) = if vertical {
+                        (x, (y as isize + d).clamp(0, h as isize - 1) as usize)
+                    } else {
+                        ((x as isize + d).clamp(0, w as isize - 1) as usize, y)
+                    };
+                    if let Some(p) = src.px.get((sy * w + sx) * 4..(sy * w + sx) * 4 + 4) {
+                        for c in 0..4 {
+                            acc[c] += p[c] * kk;
+                        }
+                    }
+                }
+                if let Some(o) = row.get_mut(x * 4..x * 4 + 4) {
+                    o.copy_from_slice(&acc);
+                }
+            }
+        });
+        out
+    };
+    if w == 0 || h == 0 {
+        return img.clone();
+    }
+    pass(&pass(img, false), true)
+}
+
+/// The picture as premultiplied signal (what the sharpening blurs).
+fn signal_image(img: &Image) -> Image {
+    let mut out = img.clone();
+    for p in out.px.as_chunks_mut::<4>().0 {
+        let a = p[3];
+        if a > 0.0 {
+            for i in 0..3 {
+                p[i] = to_signal(p[i] / a) * a;
+            }
+        } else {
+            *p = [0.0; 4];
+        }
+    }
+    out
+}
+
+/// Unpremultiplied colour of a premultiplied pixel (black when transparent).
+#[inline]
+fn unpremul(p: &[f32]) -> [f32; 3] {
+    match p.get(3) {
+        Some(&a) if a > 0.0 => [p[0] / a, p[1] / a, p[2] / a],
+        _ => [0.0; 3],
+    }
 }
 
 /// Apply `grade` to `img` (linear premultiplied RGBA f32) on the CPU, at `px_scale` working
@@ -195,6 +277,50 @@ pub fn apply_cpu(grade: &Grade, luts: &Luts, img: &mut Image, px_scale: f32) {
                     p[3] = a;
                 });
             }
+            Stage::Sharpen { amount, sigma, taps } => {
+                let sig = signal_image(img);
+                let blur = gauss_cpu(&sig, sigma, taps);
+                img.px.par_chunks_mut(4).zip(sig.px.par_chunks(4)).zip(blur.px.par_chunks(4)).for_each(|((p, s), b)| {
+                    let a = s.get(3).copied().unwrap_or(0.0);
+                    if a <= 0.0 {
+                        return;
+                    }
+                    let (x, g) = (unpremul(s), unpremul(b));
+                    for i in 0..3 {
+                        p[i] = to_linear(x[i] + amount * (x[i] - g[i])) * a;
+                    }
+                });
+            }
+            Stage::Glow { glow, radii } => {
+                let orig = img.clone();
+                // the masked source, premultiplied signal
+                for p in img.px.as_chunks_mut::<4>().0 {
+                    let a = p[3];
+                    if a > 0.0 {
+                        let s = [to_signal(p[0] / a), to_signal(p[1] / a), to_signal(p[2] / a)];
+                        let m = glow.mask(s);
+                        for i in 0..3 {
+                            p[i] = s[i] * m * a;
+                        }
+                    } else {
+                        *p = [0.0; 4];
+                    }
+                }
+                filmcraft_render::effects::box_blur(img, &radii, &radii, true);
+                img.px.par_chunks_mut(4).zip(orig.px.par_chunks(4)).for_each(|(p, o)| {
+                    let Some(x) = unpremul_signal(o) else {
+                        p.copy_from_slice(o);
+                        return;
+                    };
+                    let a = o.get(3).copied().unwrap_or(0.0);
+                    let m = glow.mask(x);
+                    let c = glow.composite(x, unpremul(p), x.map(|v| v * m));
+                    for i in 0..3 {
+                        p[i] = to_linear(c[i]) * a;
+                    }
+                    p[3] = a;
+                });
+            }
         }
     }
 }
@@ -212,6 +338,11 @@ pub const NODE_CST: u32 = 2;
 pub const NODE_LUT: u32 = 3;
 pub const NODE_PRIMARIES: u32 = 4;
 pub const NODE_MID_DETAIL: u32 = 5;
+pub const NODE_TO_SIGNAL: u32 = 6;
+pub const NODE_GAUSS: u32 = 7;
+pub const NODE_SHARPEN: u32 = 8;
+pub const NODE_GLOW_SOURCE: u32 = 9;
+pub const NODE_GLOW: u32 = 10;
 
 /// The GPU passes for `grade` at `px_scale` (none when it changes nothing).
 pub fn gpu_passes(grade: &Grade, luts: &Luts, px_scale: f32) -> Vec<GpuPass> {
@@ -224,6 +355,26 @@ pub fn gpu_passes(grade: &Grade, luts: &Luts, px_scale: f32) -> Vec<GpuPass> {
                 let mut p = [0.0; 24];
                 p[0] = amount;
                 out.push(GpuPass { i1: [NODE_MID_DETAIL, 0, 0, 0], p, combine: true, ..Default::default() });
+            }
+            Stage::Sharpen { amount, sigma, taps } => {
+                let mut p = [0.0; 24];
+                p[0] = sigma;
+                out.push(GpuPass { i1: [NODE_TO_SIGNAL, 0, 0, 0], ..Default::default() });
+                out.push(GpuPass { i1: [NODE_GAUSS, taps, 0, 0], p, save: true, ..Default::default() });
+                out.push(GpuPass { i1: [NODE_GAUSS, taps, 1, 0], p, ..Default::default() });
+                p[0] = amount;
+                out.push(GpuPass { i1: [NODE_SHARPEN, 0, 0, 0], p, combine: true, ..Default::default() });
+            }
+            Stage::Glow { glow, radii } => {
+                let mut p = [0.0; 24];
+                p[..8].copy_from_slice(&[glow.threshold, glow.gain, glow.saturation, glow.gamma, glow.core, glow.opacity, glow.highlight_recovery, 0.0]);
+                out.push(GpuPass { i1: [NODE_GLOW_SOURCE, 0, 0, 0], p, save: true, ..Default::default() });
+                for vertical in [false, true] {
+                    for &radius in radii.iter().filter(|r| **r > 0) {
+                        out.push(GpuPass { blur: Some(BoxPass { radius, vertical }), ..Default::default() });
+                    }
+                }
+                out.push(GpuPass { i1: [NODE_GLOW, glow.style.code(), 0, 0], p, combine: true, ..Default::default() });
             }
         }
     }

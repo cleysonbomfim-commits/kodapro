@@ -3,6 +3,61 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-16 — Marco 4 da aba Cor: nitidez e glow (noite, trabalho sozinho)
+
+**O que foi feito**
+- **Nó de nitidez** (`sharpen`, `crates/koda-color/src/spatial.rs`): máscara de nitidez no sinal,
+  `x + quantidade·(x − Gauss(x))`, com `amount` e `radius` (sigma em pixels do clipe).
+- **Nó de glow** (`glow`): a imagem acima de um limiar (luma com borda suave) é desfocada pelo
+  `spread`, misturada com um pouco da fonte sem desfoque (`core`), saturada, com `gamma` e `gain`,
+  e composta por cima no estilo **Soft Light, Screen, Add ou Normal**, com `opacity` e
+  **highlight recovery** (joga de volta para baixo do branco o que passar de 0,8).
+- Os padrões dos dois nós são os do powergrade KODA, **calibrados contra o DaVinci**
+  (`examples/calibra_marco4.rs`): nitidez sigma 0,8 px e quantidade 0,9; glow Soft Light,
+  limiar 0,238, spread 115 px, ganho 0,9, saturação 1,45, gamma 1,063, core 0,25, opacidade 0,426.
+- **GPU**: a nitidez usa passes próprios de Gauss separável (taps explícitos, igual na CPU); o glow
+  usa o box blur do FilmCraft (rápido para raios grandes). Os dois usam o gancho de
+  `save`/`blur`/`combine` criado no marco 3.
+- `addNode` aceita `sharpen` e `glow`; `setParam` aceita `amount`, `radius`, `style`,
+  `threshold`, `spread`, `gain`, `saturation`, `gamma`, `core`, `opacity` e `highlightRecovery`.
+- Print público `docs/koda/cor/prints/marco4-carta.png` (cartela pelo CST: só CST | nitidez +
+  glow do powergrade | glow Screen | glow Add com highlight recovery). Comparações locais (fora do
+  git): `referencia/comparacoes/{nitidez_02_vs_03,glow_03_vs_04,nitidez_glow_02_vs_04}.png`.
+  **App atualizado.**
+
+**O que funcionou — números (ΔE 2000, 1080 × 1920)**
+
+| Comparação | Média | p99 | Máxima |
+|---|---|---|---|
+| sem nitidez: 02_cst × 03_nitidez | 0,31 | 1,24 | 9,78 |
+| **Nitidez(02_cst) × 03_nitidez** | **0,14** | 0,37 | **0,61** |
+| sem glow: 03_nitidez × 04_glow | 3,78 | 8,04 | 9,69 |
+| **Glow(03_nitidez) × 04_glow** | **0,81** | 2,67 | 4,88 |
+| **Nitidez + glow(02_cst) × 04_glow** (pedido) | **0,81** | 2,68 | 4,79 |
+
+- A nitidez atende a meta (média < 1, máxima < 3). O glow atende a média, mas **não a máxima**.
+- GPU × CPU (nitidez, os 4 estilos de glow, recovery, glow largo do KODA, primárias + nitidez +
+  glow; cheio e 1/2): diferença média ≤ 0,045 de 255, p99 1.
+
+**Decisões para revisar**
+- Os valores dos nós 03 e 04 não são conhecidos: os padrões foram ajustados aos frames. Se você
+  mandar prints dos painéis desses nós no DaVinci, eu troco pelos valores reais.
+- O "Soft Light" que bate com o DaVinci é a fórmula W3C com **a imagem sobre o glow** (e não o
+  glow sobre a imagem): 0,95 contra 1,06 de ΔE no ajuste.
+- O erro que sobra no glow fica em halos em volta da pessoa e das portas: o glow do DaVinci deve
+  ter um perfil de espalhamento em várias escalas (núcleo forte e cauda longa). Para fazer isso na
+  GPU precisaria de uma 4ª textura no estágio de efeitos do FilmCraft; deixei para depois.
+- A highlight recovery não aparece nesses frames (nada passa do branco); a curva (joelho em 0,8)
+  é uma escolha minha.
+
+**O que deu problema**
+- Um teste de faixa de parâmetros mostrou que `f64::MAX` virava infinito em f32 e o valor caía
+  no padrão em vez de ir para o limite; agora infinito é limitado à faixa (só NaN volta ao padrão).
+
+**Próximo passo**
+- Marco 6 (só o motor): powergrades em arquivo, aplicar num clipe, copiar a grade de um clipe
+  para outros e colar um nó, por comandos com desfazer.
+
 ## 2026-10-16 — Marco 3 da aba Cor: primárias e curvas (noite, trabalho sozinho)
 
 **O que foi feito**

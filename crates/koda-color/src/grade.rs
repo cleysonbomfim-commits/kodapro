@@ -71,6 +71,10 @@ pub enum NodeKind {
     /// Primaries (Lift / Gamma / Gain / Offset, Temp, Tint, Contrast…) and custom curves, like
     /// a DaVinci corrector node.
     Primaries(Box<crate::primaries::Primaries>),
+    /// Unsharp-mask sharpening on the signal (node 03 "nitidez").
+    Sharpen(crate::spatial::Sharpen),
+    /// Glow (node 04).
+    Glow(crate::spatial::Glow),
 }
 
 /// How a LUT is sampled between its grid points. DaVinci's default (and the KODA powergrade's
@@ -101,6 +105,8 @@ impl NodeKind {
             "cst" => Some(NodeKind::Cst(crate::cst::Cst::default())),
             "lut" => Some(NodeKind::Lut { lut: String::new(), intensity: 1.0, interpolation: Interpolation::Trilinear }),
             "primaries" => Some(NodeKind::Primaries(Box::default())),
+            "sharpen" => Some(NodeKind::Sharpen(Default::default())),
+            "glow" => Some(NodeKind::Glow(Default::default())),
             _ => None,
         }
     }
@@ -112,6 +118,8 @@ impl NodeKind {
             NodeKind::Cst(_) => "cst",
             NodeKind::Lut { .. } => "lut",
             NodeKind::Primaries(_) => "primaries",
+            NodeKind::Sharpen(_) => "sharpen",
+            NodeKind::Glow(_) => "glow",
         }
     }
 
@@ -122,6 +130,8 @@ impl NodeKind {
             NodeKind::Cst(_) => "CST",
             NodeKind::Lut { .. } => "LUT",
             NodeKind::Primaries(_) => "Primárias",
+            NodeKind::Sharpen(_) => "Nitidez",
+            NodeKind::Glow(_) => "Glow",
         }
     }
 
@@ -171,6 +181,8 @@ impl NodeKind {
                 other => return Err(format!("lut node has no parameter \"{other}\" (lut, intensity, interpolation)")),
             },
             NodeKind::Primaries(p) => p.set_param(name, value)?,
+            NodeKind::Sharpen(x) => x.set_param(name, value)?,
+            NodeKind::Glow(x) => x.set_param(name, value)?,
         }
         Ok(())
     }
@@ -186,6 +198,8 @@ impl NodeKind {
                 interpolation: *interpolation,
             },
             NodeKind::Primaries(p) => NodeKind::Primaries(Box::new(p.sanitized())),
+            NodeKind::Sharpen(x) => NodeKind::Sharpen(x.sanitized()),
+            NodeKind::Glow(x) => NodeKind::Glow(x.sanitized()),
         }
     }
 }
@@ -337,6 +351,8 @@ impl Grade {
             NodeKind::Cst(_) => false,
             NodeKind::Lut { lut, intensity, .. } => lut.is_empty() || *intensity <= 0.0,
             NodeKind::Primaries(p) => p.is_identity(),
+            NodeKind::Sharpen(x) => x.is_identity(),
+            NodeKind::Glow(x) => x.is_identity(),
         })
     }
 }
