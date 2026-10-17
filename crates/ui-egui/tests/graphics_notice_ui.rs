@@ -22,7 +22,10 @@ impl Driver {
         let (tx, rx) = channel();
         let mut app = FilmcraftApp::new(Session::default()).with_control(rx);
         app.graphics_notice = notice;
-        let harness = Harness::builder().with_size(egui::vec2(1600.0, 980.0)).with_max_steps(10_000).build_eframe(move |_cc| app);
+        let harness = Harness::builder()
+            .with_size(egui::vec2(1600.0, 980.0 + filmcraft_ui_egui::koda::pages::HEIGHT))
+            .with_max_steps(10_000)
+            .build_eframe(move |_cc| app);
         let mut d = Driver { harness, tx };
         d.frames(4);
         d

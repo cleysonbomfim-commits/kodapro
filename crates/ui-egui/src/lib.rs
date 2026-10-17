@@ -1784,12 +1784,20 @@ impl FilmcraftApp {
             header::show(self, ui, header);
         }
         let status_h = if self.ui.show_status_bar { 20.0 } else { 0.0 };
+        // KODA Pro: the page bar along the bottom (koda::pages), under the status bar
+        // chrome like the header: an embedding app that hides the header hides it too
+        let pages_h = if koda::pages::IN_FOOTER && self.ui.show_header { koda::pages::HEIGHT } else { 0.0 };
+        let full_all = full;
+        let full = egui::Rect::from_min_max(full.min, egui::pos2(full.max.x, full.max.y - pages_h));
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 1.0, header.max.y + 1.0), egui::pos2(full.max.x - 1.0, full.max.y - status_h - 2.0));
         match self.ui.mode {
             state::Mode::Edit => self.dock_area(ui, body),
             state::Mode::Import => panels::import_mode::show(self, ui, body),
             state::Mode::Color => koda::cor::show(self, ui, body),
             state::Mode::Export => panels::export_mode::show(self, ui, body),
+        }
+        if pages_h > 0.0 {
+            koda::pages::show(self, ui, egui::Rect::from_min_max(egui::pos2(full_all.min.x, full_all.max.y - pages_h), full_all.max));
         }
         // the Timeline has had its chance to place a file drop this frame; anything left stays a bin import
         self.pending_timeline_drop = None;

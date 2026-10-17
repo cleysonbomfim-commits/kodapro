@@ -137,6 +137,11 @@ pub const UI_COMMANDS: &[UiCommand] = &[
     uic!("mode.edit", "Edit", [], None),
     uic!("mode.color", "Color", [], None),
     uic!("mode.export", "Export", ["File", "Export"], Some("Cmd+M")),
+    // KODA Pro page bar (koda::pages): DaVinci's page keys
+    uic!("page.edit", "Edit Page", [], Some("Shift+4")),
+    uic!("page.motion", "Motion Page", [], Some("Shift+5")),
+    uic!("page.color", "Color Page", [], Some("Shift+6")),
+    uic!("page.export", "Export Page", [], Some("Shift+8")),
     uic!("help.github", "Koda Pro on GitHub", ["Help"], None),
     uic!("help.reportIssue", "Report an Issue…", ["Help"], None),
     uic!("help.revealLogFiles", "Reveal Log Files…", ["Help"], None),
@@ -423,8 +428,20 @@ pub fn invoke(app: &mut FilmcraftApp, ctx: &egui::Context, id: &str, mut params:
             app.ui.mode = Mode::Edit;
             return Ok(Value::Null);
         }
-        "mode.color" => {
+        "mode.color" | "page.color" => {
             app.ui.mode = Mode::Color;
+            return Ok(Value::Null);
+        }
+        "page.edit" => {
+            app.ui.mode = Mode::Edit;
+            return Ok(Value::Null);
+        }
+        "page.export" => {
+            app.ui.mode = Mode::Export;
+            return Ok(Value::Null);
+        }
+        "page.motion" => {
+            app.ui.status = crate::i18n::t("The Motion page is not available yet").to_string();
             return Ok(Value::Null);
         }
         "mode.export" => {

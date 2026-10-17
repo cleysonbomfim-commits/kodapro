@@ -24,40 +24,43 @@ pub fn show(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
     }
     let mut x = rect.min.x + if app.integrated_titlebar { 104.0 } else { 14.0 };
-    // Home
-    let home = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(26.0, 26.0));
-    let hresp = ui.interact(home, egui::Id::new("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
-    app.auto.add("header.home", home, "Home");
-    if hresp.hovered() {
-        p.rect_filled(home, 4.0, t.hover);
-    }
-    icons::paint(&p, home.shrink(5.0), Icon::Home, if hresp.hovered() { t.text } else { t.text_dim });
-    if hresp.clicked() {
-        app.ui.mode = Mode::Import;
-    }
-    x = home.max.x + 16.0;
-    // Mode tabs (14 pt; active = primary text with a 2 pt underline under the label)
-    for (m, label, shown) in [
-        (Mode::Import, "Import", tl!("Import")),
-        (Mode::Edit, "Edit", tl!("Edit")),
-        (Mode::Color, "Color", tl!("Color")),
-        (Mode::Export, "Export", tl!("Export")),
-    ] {
-        let active = app.ui.mode == m;
-        let galley = p.layout_no_wrap(shown.to_string(), Tokens::ui(14.0), if active { t.tab_text_active } else { t.tab_text });
-        let r = Rect::from_min_size(pos2(x - 6.0, rect.min.y + 6.0), vec2(galley.size().x + 12.0, rect.height() - 12.0));
-        let resp = ui.interact(r, egui::Id::new(("mode", label)), Sense::click());
-        app.auto.add(&format!("header.mode.{}", label.to_ascii_lowercase()), r, label);
-        let col = if active || resp.hovered() { t.tab_text_active } else { t.tab_text };
-        let gw = galley.size().x;
-        p.galley_with_override_text_color(pos2(x, rect.center().y - galley.size().y / 2.0), galley, col);
-        if active {
-            p.line_segment([pos2(x, rect.min.y + 29.0), pos2(x + gw, rect.min.y + 29.0)], Stroke::new(2.0, t.tab_text_active));
+    // Home and the mode tabs; KODA Pro switches pages from the bottom bar instead (koda::pages)
+    if !crate::koda::pages::IN_FOOTER {
+        // Home
+        let home = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(26.0, 26.0));
+        let hresp = ui.interact(home, egui::Id::new("hdr-home"), Sense::click()).on_hover_text(tl!("Home"));
+        app.auto.add("header.home", home, "Home");
+        if hresp.hovered() {
+            p.rect_filled(home, 4.0, t.hover);
         }
-        if resp.clicked() {
-            app.ui.mode = m;
+        icons::paint(&p, home.shrink(5.0), Icon::Home, if hresp.hovered() { t.text } else { t.text_dim });
+        if hresp.clicked() {
+            app.ui.mode = Mode::Import;
         }
-        x += gw + 24.0;
+        x = home.max.x + 16.0;
+        // Mode tabs (14 pt; active = primary text with a 2 pt underline under the label)
+        for (m, label, shown) in [
+            (Mode::Import, "Import", tl!("Import")),
+            (Mode::Edit, "Edit", tl!("Edit")),
+            (Mode::Color, "Color", tl!("Color")),
+            (Mode::Export, "Export", tl!("Export")),
+        ] {
+            let active = app.ui.mode == m;
+            let galley = p.layout_no_wrap(shown.to_string(), Tokens::ui(14.0), if active { t.tab_text_active } else { t.tab_text });
+            let r = Rect::from_min_size(pos2(x - 6.0, rect.min.y + 6.0), vec2(galley.size().x + 12.0, rect.height() - 12.0));
+            let resp = ui.interact(r, egui::Id::new(("mode", label)), Sense::click());
+            app.auto.add(&format!("header.mode.{}", label.to_ascii_lowercase()), r, label);
+            let col = if active || resp.hovered() { t.tab_text_active } else { t.tab_text };
+            let gw = galley.size().x;
+            p.galley_with_override_text_color(pos2(x, rect.center().y - galley.size().y / 2.0), galley, col);
+            if active {
+                p.line_segment([pos2(x, rect.min.y + 29.0), pos2(x + gw, rect.min.y + 29.0)], Stroke::new(2.0, t.tab_text_active));
+            }
+            if resp.clicked() {
+                app.ui.mode = m;
+            }
+            x += gw + 24.0;
+        }
     }
     let mut left_end = x;
     // In-window menus when there is no native menu bar.

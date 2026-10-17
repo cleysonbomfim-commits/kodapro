@@ -118,6 +118,9 @@ impl PanelKind {
             PanelKind::Project => Some("Shift+1"),
             PanelKind::Source => Some("Shift+2"),
             PanelKind::Timeline => Some("Shift+3"),
+            // KODA Pro: Shift+4 / 5 / 6 / 8 switch pages, as in DaVinci (koda::pages); Program,
+            // Effect Controls, Audio Track Mixer and Media Browser keep the Window menu
+            PanelKind::Program | PanelKind::EffectControls | PanelKind::MediaBrowser | PanelKind::AudioTrackMixer if crate::koda::pages::IN_FOOTER => None,
             PanelKind::Program => Some("Shift+4"),
             PanelKind::EffectControls => Some("Shift+5"),
             PanelKind::AudioClipMixer => Some("Shift+9"),

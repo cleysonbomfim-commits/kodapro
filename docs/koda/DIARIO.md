@@ -3,6 +3,46 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
+## 2026-10-16 — Barra de páginas no rodapé, como no DaVinci
+
+**O que foi feito**
+- Nova barra de páginas ao longo do rodapé, em todas as páginas
+  (`crates/ui-egui/src/koda/pages.rs`): "Koda Pro" à esquerda; **Editar, Cor, Motion e Exportar**
+  no centro, com ícones próprios em traço fino (clipes na timeline, três círculos de cor, caminho
+  com keyframe, seta saindo da bandeja); a página atual em **verde KODA** com sublinhado;
+  **Início** e **Configurações** à direita. Motion aparece desativada (a página ainda não existe).
+- As abas de modo (e o ícone Início) saíram do cabeçalho do FilmCraft (`header.rs`, guardado por
+  `koda::pages::IN_FOOTER`). A barra é "moldura" como o cabeçalho: some quando um app que embute o
+  FilmCraft esconde o cabeçalho.
+- **Atalhos como no DaVinci:** Shift+4 Editar, Shift+5 Motion, Shift+6 Cor, Shift+8 Exportar
+  (comandos novos `page.*`; os `mode.*` continuam, com Cmd+M em Exportar). Esses atalhos eram dos
+  painéis Program, Effect Controls, Audio Track Mixer e Media Browser (padrão do Premiere); os
+  painéis continuam no menu Janela, e a predefinição "compatível com Premiere" ainda os aplica.
+- Traduções pt-BR, es, zh-CN e ja dos textos novos; "Motion" fica sem tradução (é o nome da
+  página, não o efeito de movimento).
+- Prints (renderizados fora da tela por `crates/ui-egui/examples/koda_prints.rs`, porque a tela do Mac estava dormindo): `docs/koda/cor/prints/barra-paginas-antes.png` (abas no cabeçalho),
+  `barra-paginas-depois.png` (Editar) e `barra-paginas-cor.png` (Cor, aberta com Shift+6).
+  **App atualizado.**
+
+**O que funcionou**
+- Shift+6 abre a Cor, Shift+8 o Exportar, Shift+4 volta ao Editar; os ids antigos
+  (`header.home`, `header.mode.*`) continuam valendo na barra nova, então a automação e os testes
+  do FilmCraft que clicam neles seguem funcionando.
+- Testes da interface e do motor: 1.280 passaram; CI completo verde: 3.489 testes, layers, assets (69) e wasm (50 crates) ok.
+
+**O que deu problema**
+- A seção "Barra de páginas no app inteiro" citada no pedido não está no
+  `LAYOUT_PAGINA_COR.md` do repositório (só a linha da tabela); segui a tabela e o pedido.
+- A barra tira 36 px de altura dos painéis. Testes da interface com janela de tamanho fixo
+  quebraram (menu de contexto escondido atrás da barra de ferramentas do painel Projeto, etc.):
+  as janelas de teste ganharam exatamente esses 36 px (78 linhas em 77 arquivos de teste), assim
+  os painéis ficam do mesmo tamanho de antes. O teste de moldura (`chrome_ui`) passou a tratar a
+  barra como moldura.
+- Faltavam traduções ("Settings" em chinês/japonês e o nome derivado "Page").
+
+**Próximo passo**
+- Marco 3 da aba Cor: primárias e curvas (plano antes).
+
 ## 2026-10-16 — Marco 2 da aba Cor: nós de CST e LUT
 
 **O que foi feito**
