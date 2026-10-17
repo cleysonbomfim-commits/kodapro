@@ -48,10 +48,15 @@ pub fn commands() -> Vec<CommandSpec> {
         cmd("koda.color.moveNode", "Move Color Node", r#"{"clip":clipId?,"node":nodeId,"index":int}"#, move_node),
         cmd("koda.color.renameNode", "Rename Color Node", r#"{"clip":clipId?,"node":nodeId,"name":str}"#, rename_node),
         cmd("koda.color.setNodeEnabled", "Enable/Disable Color Node", r#"{"clip":clipId?,"node":nodeId,"enabled":bool?}"#, set_node_enabled),
-        cmd("koda.color.setParam", "Set Color Node Parameter", r#"{"clip":clipId?,"node":nodeId,"param":str,"value":number|[number]|str}"#, set_param),
+        cmd(
+            "koda.color.setParam",
+            "Set Color Node Parameter",
+            r#"{"clip":clipId?,"node":nodeId,"param":str,"value":number|[number]|str,"merge":str?}"#,
+            set_param,
+        ),
         cmd("koda.color.setBypass", "Bypass Color Grade", r#"{"clip":clipId?,"bypass":bool?}"#, set_bypass),
         cmd("koda.color.setGrade", "Set Color Grade", r#"{"clip":clipId?,"grade":object}"#, set_grade_cmd),
-        cmd("koda.color.setCurve", "Set Color Curve", r#"{"clip":clipId?,"node":nodeId,"channel":"y"|"r"|"g"|"b","points":[[x,y]]}"#, set_curve),
+        cmd("koda.color.setCurve", "Set Color Curve", r#"{"clip":clipId?,"node":nodeId,"channel":"y"|"r"|"g"|"b","points":[[x,y]],"merge":str?}"#, set_curve),
         cmd(
             "koda.color.resetParams",
             "Reset Color Node",
@@ -140,9 +145,15 @@ fn node_id(cmd: &str, p: &Value) -> Result<u32> {
 }
 
 /// Change the target clip's grade with `f`, as one undo step; returns `f`'s value and the grade.
+///
+/// `merge` (text): consecutive edits with the same key share one undo step (a drag on a control).
 fn edit_grade(s: &mut Session, cmd: &'static str, label: &str, p: &Value, f: impl FnOnce(&mut Grade) -> std::result::Result<Value, String>) -> Result<Value> {
     let id = target(s, cmd, p)?;
-    s.edit_sequence(label, move |seq, _, _| {
+    let merge = match p.get("merge") {
+        None => None,
+        Some(v) => Some(v.as_str().ok_or_else(|| bad(cmd, "merge: expected text"))?.chars().take(128).collect::<String>()),
+    };
+    s.edit_sequence_as(label, merge.as_deref(), move |seq, _, _| {
         let (_, item) = seq.find_item_mut(id).ok_or_else(|| EngineError::Other("the clip went away".into()))?;
         let mut g = store::grade_of(item).map_err(|e| bad(cmd, e))?;
         let out = f(&mut g).map_err(|e| bad(cmd, e))?;

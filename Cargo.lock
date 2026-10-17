@@ -2345,6 +2345,7 @@ dependencies = [
  "filmcraft-time",
  "filmcraft-tts",
  "image",
+ "koda-color",
  "log",
  "pollster 0.4.0",
  "rayon",

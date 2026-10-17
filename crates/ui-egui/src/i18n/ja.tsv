@@ -3623,3 +3623,50 @@
 	The Motion page is not available yet	モーションページはまだ使用できません
 	Settings	設定
 	Page	ページ
+	Add a primaries node	プライマリーノードを追加
+	Add node	ノードを追加
+	Add serial node	シリアルノードを追加
+	Before (bypass)	補正前（バイパス）
+	Before / after	補正前 / 後
+	Click to add a point, drag to move, right-click to remove.	クリックでポイントを追加、ドラッグで移動、右クリックで削除。
+	Copy node	ノードをコピー
+	Curves – Custom	カーブ – カスタム
+	Delete node	ノードを削除
+	Disable node	ノードを無効化
+	Enable node	ノードを有効化
+	Gallery	ギャラリー
+	Import LUT…	LUT を読み込む…
+	Join R, G, B	R・G・B を連動
+	Library	ライブラリ
+	Lightbox	ライトボックス
+	Move left	左へ移動
+	Move right	右へ移動
+	No LUTs in the project	プロジェクトに LUT がありません
+	No clip to grade	グレーディングするクリップがありません
+	No powergrades saved yet	保存された Powergrade はまだありません
+	Nodes	ノード
+	Paste node settings	ノードの設定をペースト
+	Paste node	ノードをペースト
+	Powergrades	Powergrade
+	Primaries – Bars	プライマリー – バー
+	Primaries – Wheels	プライマリー – ホイール
+	R G B joined	R G B 連動
+	R G B separate	R G B 個別
+	Reset curve	カーブをリセット
+	Right-click or pick an effect to add a node	右クリックするかエフェクトを選んでノードを追加
+	Save grade	グレードを保存
+	nodes	ノード
+	Color correction	カラー補正
+	Color transform	カラー変換
+	Sharpen and blur	シャープとブラー
+	Light effects	ライト効果
+	Primaries and curves	プライマリーとカーブ
+	Color Space Transform	カラースペース変換
+	RGB Mixer	RGB ミキサー
+	Qualifier	クオリファイアー
+	Windows	ウィンドウ
+	Tracker	トラッカー
+	Sizing	サイズ調整
+	Vectorscope	ベクトルスコープ
+	Primaries	プライマリー
+	Keyframes	キーフレーム

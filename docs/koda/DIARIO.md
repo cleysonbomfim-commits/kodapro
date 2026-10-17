@@ -3,7 +3,67 @@
 Uma entrada por etapa concluída, da mais recente para a mais antiga. Cada entrada diz o que foi feito,
 o que funcionou, o que deu problema e qual o próximo passo. O plano está em [PLANO.md](PLANO.md).
 
-## 2026-10-17 — Marco 6 da aba Cor, só o motor: powergrades e copiar/colar (noite)
+## 2026-10-17 — Marco 5 da aba Cor: a tela da página Cor (noite)
+
+**O que foi feito** (`crates/ui-egui/src/koda/cor.rs` e `cor_paletas.rs`; a prévia antiga saiu)
+- Página Cor desenhada com as proporções medidas no print do DaVinci (`LAYOUT_PAGINA_COR.md`),
+  ícones próprios em traço fino e o acento verde KODA:
+  - **barra de cima**: Galeria, LUTs, Mídia (desativada), Clipes | nome da timeline |
+    Exportação rápida e Linha do tempo (desativadas), Nós, Efeitos, Lightbox (desativada);
+    cada botão liga/desliga seu painel;
+  - **navegador de LUTs**: pasta do projeto, "Importar LUT…" e miniaturas com prévia da LUT
+    aplicada; clicar põe a LUT no nó LUT selecionado ou cria um nó LUT depois do selecionado;
+  - **Galeria**: no lugar das LUTs, lista os powergrades da pasta padrão, "+ Salvar grade" e
+    clique para aplicar;
+  - **editor de nós**: a grade real do clipe em escada, como no DaVinci (rótulo em cima,
+    miniatura, número e ícones das ferramentas embaixo, conectores verde/azul, entrada e saída),
+    nó selecionado em verde e nó desativado tracejado; menu do botão direito com adicionar nó
+    em série, ativar/desativar, mover, copiar/colar nó e apagar;
+  - **biblioteca de efeitos**: categorias recolhíveis (Correção de cor, Transformação de cor,
+    Nitidez e desfoque, Efeitos de luz); clicar adiciona o nó depois do selecionado;
+  - **faixa de clipes**: número, timecode, trilha, miniatura e codec; o clipe atual em verde;
+    clicar seleciona e leva o playhead;
+  - **barra de paletas**: Primárias e Curvas funcionando; HDR, Mixer, Qualifier, Windows,
+    Tracker, Blur, Key e Sizing desativados; Scopes liga/desliga;
+  - **Primárias** em barras **e** rodas: Temp, Tint, Cont, Pivot, MD; Lift/Gamma/Gain (Y R G B)
+    e Offset (R G B) com barras ou rodas, campos com sublinhado na cor do canal, roda de
+    arrastar (jog) e reset por grupo; Col Boost, Shad, Hi/Light, Sat, Hue, L. Mix. Arrastar o
+    campo muda o valor (Shift = fino); duplo clique digita;
+  - **Curvas** Y/R/G/B: clicar adiciona ponto, arrastar move, botão direito remove; unir R G B;
+    reset;
+  - **Scopes**: Parade (padrão) e Forma de onda na escala 0–1023 a cada 128, além de
+    Vetorscópio e Histograma;
+  - **viewer**: altura toda, barra com antes/depois (bypass da grade), nome da timeline e
+    timecode, e o monitor de programa do FilmCraft (imagem graduada, scrub e transporte).
+- Toda mudança passa pelos comandos `koda.color.*`; um arraste inteiro é **um** passo de
+  desfazer (`setParam`/`setCurve` aceitam `merge`).
+- Comparação lado a lado com o DaVinci pelo método do layout (`examples/compara_pagina.rs`):
+  `docs/koda/cor/referencia/comparacoes/pagina_cor_lado_a_lado.png` (**local**, tem o vídeo da
+  cliente). Print público só do KODA: `docs/koda/cor/prints/marco5-pagina-cor.png` (projeto de
+  demonstração, renderizado fora da tela em 1915 × 1049).
+- Testes: os 643 da interface passaram, com os novos de `crates/ui-egui/tests/koda_cor_ui.rs` (layout, efeitos, seleção de nó,
+  arraste com um passo de desfazer, barra, reset, rodas, curvas, antes/depois).
+  **App atualizado.**
+
+**Decisões para revisar**
+- O cabeçalho do FilmCraft continua em cima da página (tem os botões da janela no macOS); por
+  isso tudo fica uns 38 px mais baixo que no DaVinci, e a barra de status do FilmCraft aparece
+  acima da barra de páginas.
+- O viewer usa o monitor de programa do FilmCraft (controles no estilo do Premiere embaixo), em
+  vez de um transporte novo no estilo do DaVinci.
+- Os nós são de tipos separados (primárias, CST, LUT, nitidez, glow). No DaVinci cada nó de
+  correção tem tudo; aqui a paleta Primárias/Curvas só edita um nó de primárias (se outro tipo
+  está selecionado, aparece "Adicionar nó de primárias").
+- O estado da página (nó selecionado, paleta, painéis visíveis) fica na memória da janela, não no
+  canal de controle; as ações em si são todas comandos.
+- Sem atalhos de teclado ainda (Alt+S, Ctrl+D etc. colidiriam com os do FilmCraft).
+- O mouse sobre os ícones das páginas mostra o nome sempre (o layout pede "nome embaixo ao passar
+  o mouse"); mantive o nome visível.
+
+**Próximo passo**
+- CI completo e resumo da noite.
+
+## 2026-10-16 — Marco 6 da aba Cor, só o motor: powergrades e copiar/colar (noite)
 
 **O que foi feito** (`crates/koda-color/src/library.rs` e comandos novos em `commands.rs`)
 - **Powergrades em arquivo** (`*.kpg`, JSON legível): a grade inteira com **as LUTs embutidas**,

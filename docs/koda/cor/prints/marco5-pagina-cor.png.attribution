@@ -1,0 +1,7 @@
+asset:        marco5-pagina-cor.png
+title:        KODA Pro marco 5, the Color page (off-screen render, 1915 x 1049) with the KODA powergrade's nodes on the FilmCraft demo project
+author:       KODA Pro contributors
+source:       original work (rendered by crates/ui-egui/examples/koda_prints.rs, cor-grade)
+license:      MIT OR Apache-2.0
+added:        2026-10-17 by Claude (agent) for cleysonbomfim
+notes:        KODA Pro's own UI and icons; the pictures are FilmCraft's procedurally generated demo clips. No camera footage, no third-party UI.

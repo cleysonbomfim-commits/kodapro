@@ -3599,3 +3599,50 @@
 	The Motion page is not available yet	Motion 页面尚不可用
 	Settings	设置
 	Page	页面
+	Add a primaries node	添加一级调色节点
+	Add node	添加节点
+	Add serial node	添加串行节点
+	Before (bypass)	调色前（旁通）
+	Before / after	调色前 / 后
+	Click to add a point, drag to move, right-click to remove.	单击添加点，拖动以移动，右键单击以删除。
+	Copy node	复制节点
+	Curves – Custom	曲线 – 自定义
+	Delete node	删除节点
+	Disable node	停用节点
+	Enable node	启用节点
+	Gallery	画廊
+	Import LUT…	导入 LUT…
+	Join R, G, B	联动 R、G、B
+	Library	库
+	Lightbox	灯箱
+	Move left	向左移动
+	Move right	向右移动
+	No LUTs in the project	项目中没有 LUT
+	No clip to grade	没有可调色的片段
+	No powergrades saved yet	尚未保存任何 Powergrade
+	Nodes	节点
+	Paste node settings	粘贴节点设置
+	Paste node	粘贴节点
+	Powergrades	Powergrade
+	Primaries – Bars	一级调色 – 条形
+	Primaries – Wheels	一级调色 – 色轮
+	R G B joined	R G B 联动
+	R G B separate	R G B 分开
+	Reset curve	重置曲线
+	Right-click or pick an effect to add a node	右键单击或选择一个效果来添加节点
+	Save grade	保存调色
+	nodes	个节点
+	Color correction	色彩校正
+	Color transform	色彩变换
+	Sharpen and blur	锐化和模糊
+	Light effects	光效
+	Primaries and curves	一级调色和曲线
+	Color Space Transform	色彩空间转换
+	RGB Mixer	RGB 混合器
+	Qualifier	限定器
+	Windows	窗口
+	Tracker	跟踪器
+	Sizing	尺寸调整
+	Vectorscope	矢量示波器
+	Primaries	一级调色
+	Keyframes	关键帧
